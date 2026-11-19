@@ -6,16 +6,19 @@ cd "$ROOT"
 
 mkdir -p dist
 
+# Local builds default to offline; CI overrides with CARGO_FLAGS="" (or --locked).
+read -r -a CARGO_FLAGS <<< "${CARGO_FLAGS:---offline}"
+
 echo "[1/4] static CLI (everything)"
-cargo rustc --offline --release -p everything -- -C target-feature=+crt-static
+cargo rustc "${CARGO_FLAGS[@]}" --release -p everything -- -C target-feature=+crt-static
 cp target/release/everything dist/everything
 
 echo "[2/4] static daemon (everythingd)"
-cargo rustc --offline --release -p everythingd -- -C target-feature=+crt-static
+cargo rustc "${CARGO_FLAGS[@]}" --release -p everythingd -- -C target-feature=+crt-static
 cp target/release/everythingd dist/everythingd
 
 echo "[3/4] GTK3 GUI (links system GTK3, small binary)"
-cargo build --offline --release -p everything-gtk
+cargo build "${CARGO_FLAGS[@]}" --release -p everything-gtk
 cp target/release/everything-gtk dist/everything-gtk
 
 echo "[4/4] verify"

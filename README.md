@@ -52,7 +52,8 @@ build-static.sh      静态/分发构建
 
 ## 构建
 
-需要 Rust 1.85+（edition 2024）与 Cargo。本项目可完全离线构建（依赖已缓存）：
+仓库不提交任何构建产物（`target/`、`dist/` 已忽略），由 GitHub Actions 在 `ubuntu-24.04` 上构建并上传 `everything-linux-x86_64.tar.gz`。
+本地构建需要 Rust 1.85+（edition 2024）与 Cargo；离线环境可直接：
 
 ```bash
 git clone https://github.com/sunjunior/Everything-Linux.git
@@ -64,8 +65,10 @@ cargo build --offline --release
 生成可分发产物（CLI/daemon 为 static-pie；GUI 内嵌 daemon）：
 
 ```bash
-./build-static.sh             # 产物在 dist/
+./build-static.sh             # 产物在 dist/（默认 --offline；CI 通过 CARGO_FLAGS="--locked" 覆盖）
 ```
+
+CI 中 `CARGO_FLAGS="--locked" ./build-static.sh` 会安装 GTK3 开发库后构建 CLI、daemon 与内嵌守护进程的 GUI，并打包上传。
 
 `dist/` 内容：
 

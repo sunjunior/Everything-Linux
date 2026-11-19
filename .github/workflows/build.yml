@@ -1,0 +1,63 @@
+name: Build Linux binaries
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install GTK3 build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libgtk-3-dev libglib2.0-dev libpango1.0-dev libcairo2-dev
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build static CLI, daemon and GTK GUI
+        env:
+          CARGO_FLAGS: "--locked"
+        run: ./build-static.sh
+
+      - name: Package artifacts
+        run: |
+          mkdir -p package
+          cp dist/everything dist/everythingd dist/everything-gtk README.md LICENSE package/
+          tar -czf everything-linux-x86_64.tar.gz -C package .
+          echo "ARTIFACT_SHA256=$(sha256sum everything-linux-x86_64.tar.gz | cut -d' ' -f1)" >> "$GITHUB_ENV"
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: everything-linux-x86_64
+          path: |
+            dist/everything
+            dist/everythingd
+            dist/everything-gtk
+            everything-linux-x86_64.tar.gz
+
+      - name: Publish release on version tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: everything-linux-x86_64.tar.gz
+          body: |
+            Everything-Linux x86-64 构建产物
+
+            - `everything`：静态 CLI（static-pie）
+            - `everythingd`：静态守护进程（static-pie）
+            - `everything-gtk`：GTK3 GUI，已内嵌守护进程，单文件分发
+
+            SHA256: `${{ env.ARTIFACT_SHA256 }}`
