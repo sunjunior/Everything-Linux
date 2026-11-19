@@ -1,0 +1,19 @@
+[package]
+name = "everythingd"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "everythingd"
+path = "src/main.rs"
+
+[dependencies]
+everything_core.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+serde.workspace = true
+serde_json.workspace = true
