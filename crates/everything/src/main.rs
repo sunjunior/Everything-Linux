@@ -81,9 +81,7 @@ fn main() -> anyhow::Result<()> {
             if std::path::Path::new(&config.socket_path).exists() {
                 return Err(e.into());
             }
-            let exe = std::env::current_exe()?;
-            let root = exe.parent().map(|p| p.to_path_buf());
-            ipc::ensure_daemon(&config, root.as_deref(), None)?;
+            ipc::ensure_daemon(&config, None, None)?;
             ipc::client_call(&config.socket_path, &req)?
         }
     };

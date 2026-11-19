@@ -106,10 +106,14 @@ fn gui_socket_path(config: &Config) -> PathBuf {
     PathBuf::from(os)
 }
 
-fn notify_existing_gui(path: &PathBuf) -> bool {
+fn notify_existing_gui(path: &PathBuf, exe: Option<&std::path::Path>) -> bool {
     match UnixStream::connect(path) {
         Ok(mut stream) => {
-            let _ = stream.write_all(b"SHOW\n");
+            let msg = match exe {
+                Some(p) => format!("SHOW {}\n", p.display()),
+                None => "SHOW\n".to_string(),
+            };
+            let _ = stream.write_all(msg.as_bytes());
             let _ = stream.flush();
             true
         }
@@ -117,7 +121,7 @@ fn notify_existing_gui(path: &PathBuf) -> bool {
     }
 }
 
-fn spawn_gui_socket_listener(path: PathBuf, tx: glib::Sender<()>) {
+fn spawn_gui_socket_listener(path: PathBuf, tx: glib::Sender<String>) {
     std::thread::Builder::new()
         .name("gui-single-instance".into())
         .spawn(move || {
@@ -137,9 +141,14 @@ fn spawn_gui_socket_listener(path: PathBuf, tx: glib::Sender<()>) {
             for stream in listener.incoming() {
                 match stream {
                     Ok(mut s) => {
-                        let mut buf = [0u8; 16];
-                        let _ = s.read(&mut buf);
-                        let _ = tx.send(());
+                        let mut buf = [0u8; 1024];
+                        let n = s.read(&mut buf).unwrap_or(0);
+                        let text = String::from_utf8_lossy(&buf[..n]).trim().to_string();
+                        let exe = text
+                            .strip_prefix("SHOW ")
+                            .map(|p| p.trim().to_string())
+                            .unwrap_or_default();
+                        let _ = tx.send(exe);
                     }
                     Err(_) => break,
                 }
@@ -161,9 +170,11 @@ fn present_existing_window() {
 fn main() -> anyhow::Result<()> {
     let config = Config::load()?;
     let gui_socket = gui_socket_path(&config);
+    let self_exe = std::env::current_exe().ok();
 
-    // A second launch simply asks the running instance to raise its window.
-    if notify_existing_gui(&gui_socket) {
+    // A second launch asks the running instance to raise its window and to
+    // adopt this binary's location as the default root.
+    if notify_existing_gui(&gui_socket, self_exe.as_deref()) {
         return Ok(());
     }
 
@@ -172,10 +183,16 @@ fn main() -> anyhow::Result<()> {
         .build();
     let (show_tx, show_rx) = glib::MainContext::channel(glib::Priority::DEFAULT);
     spawn_gui_socket_listener(gui_socket.clone(), show_tx);
-    show_rx.attach(None, |_| {
-        present_existing_window();
-        glib::ControlFlow::Continue
-    });
+    {
+        let cfg = config.clone();
+        show_rx.attach(None, move |exe: String| {
+            if !exe.is_empty() && cfg.auto_root {
+                let _ = ipc::set_auto_root(&cfg, std::path::Path::new(&exe));
+            }
+            present_existing_window();
+            glib::ControlFlow::Continue
+        });
+    }
 
     app.connect_activate(move |app| {
         if WINDOW.get().is_none() {
@@ -237,19 +254,32 @@ fn build_ui(app: &gtk::Application, config: Config) {
     let (result_tx, result_rx) = glib::MainContext::channel(glib::Priority::DEFAULT);
 
     let config_worker = config.clone();
-    let gui_root = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|d| d.to_path_buf()));
+    let gui_exe = std::env::current_exe().ok();
     std::thread::Builder::new()
         .name("gui-query".into())
         .spawn(move || {
-            if let Err(e) = ipc::ensure_daemon(&config_worker, gui_root.as_deref(), Some(EMBEDDED_DAEMON)) {
+            if let Err(e) = ipc::ensure_daemon(&config_worker, gui_exe.as_deref(), Some(EMBEDDED_DAEMON)) {
                 let _ = result_tx.send(ResultMsg {
                     header: None,
                     lines: Vec::new(),
                     error: Some(e.to_string()),
                 });
                 return;
+            }
+            if let Some(exe) = gui_exe.as_deref() {
+                let adopted = ipc::set_auto_root(&config_worker, exe).unwrap_or(false);
+                if !adopted && config_worker.auto_root {
+                    // Older/foreign daemon: restart it so the new default-root
+                    // behaviour and this binary are in effect.
+                    ipc::shutdown_daemon(&config_worker);
+                    std::thread::sleep(std::time::Duration::from_millis(400));
+                    let _ = std::fs::remove_file(&config_worker.socket_path);
+                    if let Err(e) = ipc::ensure_daemon(&config_worker, gui_exe.as_deref(), Some(EMBEDDED_DAEMON)) {
+                        let _ = result_tx.send(ResultMsg { header: None, lines: Vec::new(), error: Some(e.to_string()) });
+                        return;
+                    }
+                    let _ = ipc::set_auto_root(&config_worker, exe);
+                }
             }
             while let Ok(mut text) = query_rx.recv() {
                 std::thread::sleep(std::time::Duration::from_millis(80));
@@ -410,8 +440,28 @@ fn build_ui(app: &gtk::Application, config: Config) {
         install_tray_handlers(icon, tray);
     }
 
+    window.set_focus_on_map(true);
     window.show_all();
+    window.set_focus(Some(&entry));
     entry.grab_focus();
+    {
+        // Defer focus until the toplevel is mapped/active (double-click launch timing).
+        let e = entry.clone();
+        glib::idle_add_local_once(move || {
+            e.grab_focus();
+        });
+    }
+    {
+        // When the window regains focus (alt-tab, tray restore), make sure the
+        // search box owns the input method context.
+        let e = entry.clone();
+        window.connect_focus_in_event(move |_, _| {
+            if !e.has_focus() {
+                e.grab_focus();
+            }
+            glib::Propagation::Proceed
+        });
+    }
     let _ = query_tx.send(String::new());
 }
 

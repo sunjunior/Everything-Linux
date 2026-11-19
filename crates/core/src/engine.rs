@@ -207,6 +207,27 @@ impl Engine {
         debug!("incremental index update ({} slots) -> generation {generation}", changed.len());
     }
 
+    /// Adopt the default root from a newly launched front-end executable.
+    /// Ignored when the user explicitly configured roots.
+    pub fn set_auto_root(&mut self, frontend: &Path) -> Result<bool> {
+        if !self.config.auto_root {
+            return Ok(false);
+        }
+        let dir = frontend
+            .parent()
+            .map(|p| p.to_path_buf())
+            .or_else(|| std::env::current_dir().ok())
+            .unwrap_or_else(|| PathBuf::from("."));
+        if self.config.exe_path.as_deref() == Some(frontend) && self.config.roots == vec![dir.clone()] {
+            return Ok(false);
+        }
+        self.config.exe_path = Some(frontend.to_path_buf());
+        self.config.roots = vec![dir];
+        self.reindex()?;
+        self.config.save()?;
+        Ok(true)
+    }
+
     pub fn save(&self) -> Result<()> {
         let generation = self.generation.load(Ordering::SeqCst);
         persist::save(&self.store.read(), &self.config.snapshot_path, generation)?;

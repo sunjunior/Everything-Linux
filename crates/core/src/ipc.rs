@@ -173,7 +173,7 @@ fn extract_embedded_daemon(bytes: &[u8]) -> Result<std::path::PathBuf> {
 
 pub fn ensure_daemon(
     config: &crate::config::Config,
-    preferred_root: Option<&std::path::Path>,
+    frontend_exe: Option<&std::path::Path>,
     embedded_daemon: Option<&[u8]>,
 ) -> Result<()> {
     if config.socket_path.exists() {
@@ -195,11 +195,9 @@ pub fn ensure_daemon(
     })?;
     let mut cmd = std::process::Command::new(daemon);
     cmd.arg("--quiet");
-    if let Some(root) = preferred_root {
-        cmd.arg("--root").arg(root);
-    }
-    for r in &config.roots {
-        cmd.arg("--root").arg(r);
+    if let Some(fe) = frontend_exe {
+        // Tell the daemon which program's location defines the default root.
+        cmd.arg("--frontend-exe").arg(fe);
     }
     cmd.stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
@@ -213,3 +211,23 @@ pub fn ensure_daemon(
     Err(Error::Ipc("everythingd 启动超时（30 秒），请检查其是否能访问索引目录".into()))
 }
 
+
+/// Ask a running daemon to adopt the default root of the launching front-end.
+pub fn set_auto_root(config: &crate::config::Config, frontend_exe: &std::path::Path) -> Result<bool> {
+    let req = Request {
+        cmd: "auto-root".into(),
+        text: frontend_exe.to_string_lossy().into_owned(),
+        options: WireOptions::default(),
+    };
+    let (header, _) = client_call(&config.socket_path, &req)?;
+    Ok(header.ok)
+}
+
+pub fn shutdown_daemon(config: &crate::config::Config) {
+    let req = Request {
+        cmd: "shutdown".into(),
+        text: String::new(),
+        options: WireOptions::default(),
+    };
+    let _ = client_call(&config.socket_path, &req);
+}

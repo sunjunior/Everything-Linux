@@ -89,7 +89,7 @@ CI 中 `CARGO_FLAGS="--locked" ./build-static.sh` 会安装 GTK3 开发库后构
 
 ## 部署与运行依赖
 
-**最简方式**：把 `dist/everything-gtk` 单独拷到目标机器，双击/直接运行即可。首次运行会把内嵌的守护进程释放到 `~/.cache/everything-linux/`，并以 GUI 所在目录作为默认索引根。
+**最简方式**：把 `dist/everything-gtk` 单独拷到目标机器，双击/直接运行即可。首次运行会把内嵌的守护进程释放到 `~/.cache/everything-linux/`，并以 GUI 所在目录作为默认索引根；把 GUI 移到新目录后再启动会自动切换索引根。
 
 - CLI/daemon 为静态链接：不依赖目标机 glibc 版本、GTK、X11；只需 x86-64 + Linux 内核 ≥ 4.4。
 - GUI 动态依赖系统 **GTK3**（`libgtk-3.so.0`、`libglib-2.0.so.0` 等）；动态符号含 `GLIBC_2.39`，建议 glibc ≥ 2.39；需 X11/Wayland 图形会话和图标主题（任务栏图标）。
@@ -98,8 +98,9 @@ CI 中 `CARGO_FLAGS="--locked" ./build-static.sh` 会安装 GTK3 开发库后构
 配置路径：`~/.config/everything-linux/config.toml`（路径支持 `~` 展开）：
 
 ```toml
-# roots 留空时首次启动自动写入当前可执行文件所在目录；
-# 显式写 roots = ["/path/one", "/path/two"] 则不再随程序移动而改变
+# roots 留空时自动跟随启动程序（everything-gtk / everything）所在目录；
+# 程序移动到新目录后，下次启动会自动切换为新目录（即使旧托盘实例仍在运行）；
+# 显式写 roots = ["/path/one"] 或 index add/remove 后则固定，不再跟随
 snapshot_path = "~/.cache/everything-linux/db.eldb"
 socket_path = "/tmp/everything-linux.sock"
 watch_enabled = true

@@ -10,6 +10,7 @@ fn main() -> anyhow::Result<()> {
     let mut config = Config::load()?;
     let mut no_snapshot = false;
     let mut roots: Vec<PathBuf> = Vec::new();
+    let mut frontend_exe: Option<PathBuf> = None;
     let mut quiet = false;
 
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -32,6 +33,13 @@ fn main() -> anyhow::Result<()> {
                     anyhow::bail!("--threads requires a number");
                 }
                 config.threads = args[i].parse()?;
+            }
+            "--frontend-exe" => {
+                i += 1;
+                if i >= args.len() {
+                    anyhow::bail!("--frontend-exe requires a path");
+                }
+                frontend_exe = Some(PathBuf::from(&args[i]));
             }
             "--socket" => {
                 i += 1;
@@ -57,7 +65,7 @@ fn main() -> anyhow::Result<()> {
         // Explicit --root wins over exe-location defaults.
         config.mark_manual_roots();
     }
-    let roots_changed = config.apply_exe_root();
+    let roots_changed = config.apply_exe_root(frontend_exe.as_deref());
     let used_default = roots_changed;
 
     if !quiet {
@@ -253,6 +261,13 @@ fn dispatch(
             }
             Err(e) => Header::error(e.to_string()),
         },
+        "auto-root" => {
+            let fe = std::path::PathBuf::from(&req.text);
+            match engine.set_auto_root(&fe) {
+                Ok(_) => Header { ok: true, ..Header::default() },
+                Err(e) => Header::error(e.to_string()),
+            }
+        }
         "reindex" => match engine.reindex() {
             Ok(()) => {
                 let _ = engine.config.save();

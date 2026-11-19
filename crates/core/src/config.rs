@@ -82,22 +82,30 @@ impl Config {
 
     /// Keep the default root in sync with the executable location.
     /// Returns true if roots were (re)set, which requires a fresh index.
-    pub fn apply_exe_root(&mut self) -> bool {
+    /// Keep the default root in sync with the front-end executable location.
+    /// `frontend` is the GUI/CLI the user actually launched (its directory is
+    /// the default root). Returns true if roots were (re)set.
+    pub fn apply_exe_root(&mut self, frontend: Option<&std::path::Path>) -> bool {
         if !self.auto_root {
             return false;
         }
-        let exe = match std::env::current_exe() {
-            Ok(p) => p,
-            Err(_) => return false,
+        let (exe, dir) = match frontend {
+            Some(p) => {
+                let dir = p
+                    .parent()
+                    .map(|d| d.to_path_buf())
+                    .unwrap_or_else(|| PathBuf::from("."));
+                (p.to_path_buf(), dir)
+            }
+            None => {
+                // Standalone daemon: default to its working directory.
+                let dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+                (dir.join("everythingd"), dir)
+            }
         };
-        if self.exe_path.as_ref() == Some(&exe) && !self.roots.is_empty() {
+        if self.exe_path.as_ref() == Some(&exe) && self.roots == vec![dir.clone()] {
             return false;
         }
-        let dir = exe
-            .parent()
-            .map(|p| p.to_path_buf())
-            .or_else(|| std::env::current_dir().ok())
-            .unwrap_or_else(|| PathBuf::from("."));
         self.roots = vec![dir];
         self.exe_path = Some(exe);
         true
