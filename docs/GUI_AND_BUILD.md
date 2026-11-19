@@ -85,3 +85,9 @@ GUI 通过 Unix socket IPC 复用同一个 `everything_core` 查询引擎，不�
 
 注意：GUI 单文件仍然**动态依赖系统 GTK3**（见 `DEPENDENCIES.md`）；守护进程是静态的，
 内嵌后解压出来的也是静态文件，不依赖目标机器的 glibc 版本。
+
+## 结果列表右键菜单（v0.6）
+
+结果列表中右键某一行会弹出三项菜单：`打开`（默认程序打开该项）、`打开路径`（文件管理器打开其父目录）、
+`复制完整路径和文件名`（写入剪贴板）。实现位于 `crates/everything-gtk/src/main.rs` 的
+`connect_button_press_event` 与 `file_uri`/`open_target`/`open_parent`/`copy_path` 辅助函数。

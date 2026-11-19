@@ -15,6 +15,41 @@ use everything_core::ipc::{self, Header, Request, WireOptions};
 
 const EMBEDDED_DAEMON: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/everythingd"));
 
+fn file_uri(path: &str) -> String {
+    let mut out = String::from("file://");
+    for &b in path.as_bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'/' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
+fn open_target(path: &str) {
+    let _ = gio::AppInfo::launch_default_for_uri(
+        &file_uri(path),
+        None::<&gio::AppLaunchContext>,
+    );
+}
+
+fn open_parent(path: &str) {
+    if let Some(parent) = std::path::Path::new(path).parent() {
+        open_target(&parent.to_string_lossy());
+    }
+}
+
+fn copy_path(path: &str) {
+    if let Some(display) = gtk::gdk::Display::default() {
+        if let Some(clipboard) = gtk::Clipboard::default(&display) {
+            clipboard.set_text(path);
+        }
+    }
+}
+
+
 struct TrayData {
     app: gtk::Application,
     window: gtk::ApplicationWindow,
@@ -270,9 +305,44 @@ fn build_ui(app: &gtk::Application, config: Config) {
         tree.connect_row_activated(move |_tree, path, _col| {
             if let Some(iter) = model.iter(path) {
                 let value: String = model.value(&iter, 0).get().unwrap_or_default();
-                let uri = format!("file://{}", value.replace(' ', "%20"));
-                let _ = gio::AppInfo::launch_default_for_uri(&uri, None::<&gio::AppLaunchContext>);
+                open_target(&value);
             }
+        });
+    }
+
+    // Right-click context menu on a result row: open / open path / copy path.
+    {
+        let model = tree.model().unwrap();
+        tree.connect_button_press_event(move |tree, event| {
+            if event.button() != 3 {
+                return glib::Propagation::Proceed;
+            }
+            let (x, y) = event.position();
+            if let Some((Some(path), _, _, _)) = tree.path_at_pos(x as i32, y as i32) {
+                tree.selection().select_path(&path);
+                if let Some(iter) = model.iter(&path) {
+                    let value: String = model.value(&iter, 0).get().unwrap_or_default();
+                    if !value.is_empty() {
+                        let menu = gtk::Menu::new();
+                        let open = gtk::MenuItem::with_label("打开");
+                        let open_path = gtk::MenuItem::with_label("打开路径");
+                        let copy = gtk::MenuItem::with_label("复制完整路径和文件名");
+                        let v1 = value.clone();
+                        open.connect_activate(move |_| open_target(&v1));
+                        let v2 = value.clone();
+                        open_path.connect_activate(move |_| open_parent(&v2));
+                        let v3 = value.clone();
+                        copy.connect_activate(move |_| copy_path(&v3));
+                        menu.append(&open);
+                        menu.append(&open_path);
+                        menu.append(&copy);
+                        menu.show_all();
+                        menu.popup_at_pointer(None);
+                        return glib::Propagation::Stop;
+                    }
+                }
+            }
+            glib::Propagation::Proceed
         });
     }
 
