@@ -23,6 +23,22 @@ Everything 在 Windows 上的极速来自两个系统事实：直接解析 NTFS 
 - 结果右键菜单：`打开`、`打开路径`、`复制完整路径和文件名`
 - 单文件分发：GUI 内嵌守护进程，拷贝一个文件即可使用
 
+## 界面预览
+
+以下截图使用合成测试数据，不包含任何真实路径或个人信息；状态栏中的运行时统计信息已做马赛克处理。
+
+**1. 输入即出结果的搜索列表**
+
+![搜索结果](docs/screenshots/01-search-results.png)
+
+**2. 属性过滤语法（`ext:md`）**
+
+![属性过滤](docs/screenshots/02-property-filter.png)
+
+**3. 结果右键菜单：打开 / 打开路径 / 复制完整路径和文件名**
+
+![右键菜单](docs/screenshots/03-context-menu.png)
+
 ## 软件架构
 
 ```
