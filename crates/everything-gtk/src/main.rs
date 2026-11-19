@@ -167,7 +167,53 @@ fn present_existing_window() {
     }
 }
 
+
+fn env_set(key: &str) -> bool {
+    std::env::var_os(key).map(|v| !v.is_empty()).unwrap_or(false)
+}
+
+/// Some launchers (e.g. a Thunar started before the IM vars were exported) do
+/// not pass GTK_IM_MODULE/XMODIFIERS to children. Detect the running input
+/// method framework and set them before GTK initializes.
+fn ensure_ime_env() {
+    if env_set("GTK_IM_MODULE") {
+        return;
+    }
+    let running = |name: &str| {
+        std::process::Command::new("pidof")
+            .arg(name)
+            .output()
+            .map(|o| o.status.success() && !o.stdout.is_empty())
+            .unwrap_or(false)
+    };
+    if running("fcitx5") || running("fcitx") {
+        unsafe {
+            std::env::set_var("GTK_IM_MODULE", "fcitx");
+        }
+        if !env_set("XMODIFIERS") {
+            unsafe {
+                std::env::set_var("XMODIFIERS", "@im=fcitx");
+            }
+        }
+        if !env_set("QT_IM_MODULE") {
+            unsafe {
+                std::env::set_var("QT_IM_MODULE", "fcitx");
+            }
+        }
+    } else if running("ibus-daemon") {
+        unsafe {
+            std::env::set_var("GTK_IM_MODULE", "ibus");
+        }
+        if !env_set("XMODIFIERS") {
+            unsafe {
+                std::env::set_var("XMODIFIERS", "@im=ibus");
+            }
+        }
+    }
+}
+
 fn main() -> anyhow::Result<()> {
+    ensure_ime_env();
     let config = Config::load()?;
     let gui_socket = gui_socket_path(&config);
     let self_exe = std::env::current_exe().ok();

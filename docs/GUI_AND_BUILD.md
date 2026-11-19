@@ -100,7 +100,11 @@ GUI 是标准 GTK3 应用，通过 GTK IM 模块使用系统输入法，本身�
 - 会话环境需导出 `GTK_IM_MODULE`、`XMODIFIERS`（fcitx 为 `GTK_IM_MODULE=fcitx`、`XMODIFIERS=@im=fcitx`）以及可用的 `DBUS_SESSION_BUS_ADDRESS`；
 - 启动后搜索框会自动获得焦点（`entry.grab_focus()`），从任务栏恢复或单实例唤起时也会重新聚焦，保证输入法立即可用。
 
-若在输入框中无法切换输入法，先确认焦点确实在搜索框、`fcitx5-remote -t` 能切换，并用 `fcitx5-diagnose` 检查 GTK 前端；这通常属于输入法会话配置问题而非程序本身。
+启动时若检测到 `GTK_IM_MODULE` 为空，程序会自动探测运行中的 `fcitx5`/`fcitx`/`ibus` 并在 GTK 初始化前补上
+`GTK_IM_MODULE`、`XMODIFIERS`（以及 `QT_IM_MODULE`），因此即使从早期启动、未携带输入法环境变量的文件管理器
+（例如 Thunar）双击启动，也能正常使用中文输入法。
+
+若仍无法切换：确认焦点在搜索框、`fcitx5-remote -t` 能切换，并用 `fcitx5-diagnose` 检查 GTK 前端。
 
 ### 默认索引根跟随启动位置（v0.7 修正）
 
