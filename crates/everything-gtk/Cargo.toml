@@ -1,0 +1,19 @@
+[package]
+name = "everything-gtk"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "everything-gtk"
+path = "src/main.rs"
+
+[dependencies]
+everything_core.workspace = true
+gtk.workspace = true
+gtk-sys.workspace = true
+gdk-sys.workspace = true
+glib-sys.workspace = true
+anyhow.workspace = true

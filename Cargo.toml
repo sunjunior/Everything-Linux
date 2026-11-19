@@ -1,0 +1,47 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/core",
+    "crates/everythingd",
+    "crates/everything",
+    "crates/everything-gtk",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT OR Apache-2.0"
+authors = ["everything-linux contributors"]
+
+[workspace.dependencies]
+anyhow = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rayon = "1"
+crossbeam-channel = "0.5"
+parking_lot = "0.12"
+dashmap = "6"
+arc-swap = "1"
+regex = "1"
+aho-corasick = "1"
+zstd = "0.13"
+toml = "0.8"
+dirs = "7"
+libc = "0.2"
+smallvec = "1"
+gtk = "0.18"
+gtk-sys = "0.18"
+gdk-sys = "0.18"
+glib-sys = "0.18"
+everything_core = { path = "crates/core" }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+strip = true
