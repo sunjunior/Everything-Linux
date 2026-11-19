@@ -35,7 +35,51 @@ fn open_target(path: &str) {
     );
 }
 
-fn open_parent(path: &str) {
+fn command_exists(name: &str) -> bool {
+    std::env::var_os("PATH")
+        .map(|paths| std::env::split_paths(&paths).any(|d| d.join(name).is_file()))
+        .unwrap_or(false)
+}
+
+/// Open the containing folder and select the item via the standard
+/// org.freedesktop.FileManager1 interface (Nautilus, Dolphin, Nemo, Caja,
+/// Thunar 4.18+ etc. all implement it).
+fn dbus_show_items(path: &str) -> bool {
+    use gtk::glib::variant::ToVariant;
+    let conn = match gio::bus_get_sync(gio::BusType::Session, gio::Cancellable::NONE) {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+    let args = (vec![file_uri(path)], "").to_variant();
+    conn.call_sync(
+        Some("org.freedesktop.FileManager1"),
+        "/org/freedesktop/FileManager1",
+        "org.freedesktop.FileManager1",
+        "ShowItems",
+        Some(&args),
+        Some(gtk::glib::VariantTy::UNIT),
+        gio::DBusCallFlags::NONE,
+        3000,
+        gio::Cancellable::NONE,
+    )
+    .is_ok()
+}
+
+/// Open the parent directory and highlight the selected file/folder.
+fn open_parent_and_select(path: &str) {
+    if dbus_show_items(path) {
+        return;
+    }
+    for bin in ["nautilus", "dolphin", "nemo", "caja"] {
+        if command_exists(bin) {
+            let _ = std::process::Command::new(bin)
+                .arg("--select")
+                .arg(path)
+                .spawn();
+            return;
+        }
+    }
+    // Last resort: just open the directory.
     if let Some(parent) = std::path::Path::new(path).parent() {
         open_target(&parent.to_string_lossy());
     }
@@ -463,7 +507,7 @@ fn build_ui(app: &gtk::Application, config: Config) {
                         let v1 = value.clone();
                         open.connect_activate(move |_| open_target(&v1));
                         let v2 = value.clone();
-                        open_path.connect_activate(move |_| open_parent(&v2));
+                        open_path.connect_activate(move |_| open_parent_and_select(&v2));
                         let v3 = value.clone();
                         copy.connect_activate(move |_| copy_path(&v3));
                         menu.append(&open);

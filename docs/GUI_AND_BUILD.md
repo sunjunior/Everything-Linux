@@ -89,7 +89,7 @@ GUI 通过 Unix socket IPC 复用同一个 `everything_core` 查询引擎，不�
 ## 结果列表右键菜单（v0.6）
 
 结果列表中右键某一行会弹出三项菜单：`打开`（默认程序打开该项）、`打开路径`（文件管理器打开其父目录）、
-`复制完整路径和文件名`（写入剪贴板）。实现位于 `crates/everything-gtk/src/main.rs` 的
+`复制完整路径和文件名`（写入剪贴板）。其中“打开路径”通过标准 `org.freedesktop.FileManager1.ShowItems` 打开父目录并**选中该文件/目录**（Nautilus/Dolphin/Nemo/Caja/Thunar 4.18+ 均支持），并以各文件管理器的 `--select` 作为回退。实现位于 `crates/everything-gtk/src/main.rs` 的
 `connect_button_press_event` 与 `file_uri`/`open_target`/`open_parent`/`copy_path` 辅助函数。
 
 ## 中文输入法（IME）支持
