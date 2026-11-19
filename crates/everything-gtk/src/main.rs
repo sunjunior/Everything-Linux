@@ -93,7 +93,12 @@ struct WindowRef(gtk::ApplicationWindow);
 unsafe impl Send for WindowRef {}
 unsafe impl Sync for WindowRef {}
 
+struct EntryRef(gtk::Entry);
+unsafe impl Send for EntryRef {}
+unsafe impl Sync for EntryRef {}
+
 static WINDOW: OnceLock<WindowRef> = OnceLock::new();
+static ENTRY: OnceLock<EntryRef> = OnceLock::new();
 
 fn gui_socket_path(config: &Config) -> PathBuf {
     let mut os = config.socket_path.clone().into_os_string();
@@ -147,6 +152,9 @@ fn present_existing_window() {
     if let Some(WindowRef(w)) = WINDOW.get() {
         w.show_all();
         w.present();
+        if let Some(EntryRef(e)) = ENTRY.get() {
+            e.grab_focus();
+        }
     }
 }
 
@@ -198,6 +206,7 @@ fn build_ui(app: &gtk::Application, config: Config) {
     vbox.set_margin_end(8);
 
     let entry = gtk::Entry::new();
+    let _ = ENTRY.set(EntryRef(entry.clone()));
     entry.set_placeholder_text(Some("Search file names...  (e.g. *.rs  size:>1mb  ext:rs|md)"));
     entry.set_hexpand(true);
 
@@ -402,6 +411,7 @@ fn build_ui(app: &gtk::Application, config: Config) {
     }
 
     window.show_all();
+    entry.grab_focus();
     let _ = query_tx.send(String::new());
 }
 

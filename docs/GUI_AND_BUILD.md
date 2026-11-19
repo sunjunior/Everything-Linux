@@ -91,3 +91,13 @@ GUI 通过 Unix socket IPC 复用同一个 `everything_core` 查询引擎，不�
 结果列表中右键某一行会弹出三项菜单：`打开`（默认程序打开该项）、`打开路径`（文件管理器打开其父目录）、
 `复制完整路径和文件名`（写入剪贴板）。实现位于 `crates/everything-gtk/src/main.rs` 的
 `connect_button_press_event` 与 `file_uri`/`open_target`/`open_parent`/`copy_path` 辅助函数。
+
+## 中文输入法（IME）支持
+
+GUI 是标准 GTK3 应用，通过 GTK IM 模块使用系统输入法，本身不需要特殊处理：
+
+- 需要系统安装输入法框架及 GTK3 模块（如 `fcitx5` + `fcitx5-gtk`，或 `ibus` + `ibus-gtk3`）；
+- 会话环境需导出 `GTK_IM_MODULE`、`XMODIFIERS`（fcitx 为 `GTK_IM_MODULE=fcitx`、`XMODIFIERS=@im=fcitx`）以及可用的 `DBUS_SESSION_BUS_ADDRESS`；
+- 启动后搜索框会自动获得焦点（`entry.grab_focus()`），从任务栏恢复或单实例唤起时也会重新聚焦，保证输入法立即可用。
+
+若在输入框中无法切换输入法，先确认焦点确实在搜索框、`fcitx5-remote -t` 能切换，并用 `fcitx5-diagnose` 检查 GTK 前端；这通常属于输入法会话配置问题而非程序本身。
