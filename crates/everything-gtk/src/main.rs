@@ -172,48 +172,96 @@ fn env_set(key: &str) -> bool {
     std::env::var_os(key).map(|v| !v.is_empty()).unwrap_or(false)
 }
 
-/// Some launchers (e.g. a Thunar started before the IM vars were exported) do
-/// not pass GTK_IM_MODULE/XMODIFIERS to children. Detect the running input
-/// method framework and set them before GTK initializes.
+/// Scan /proc for a running input-method framework (no external tools).
+fn detect_im() -> Option<&'static str> {
+    let mut fcitx = false;
+    let mut ibus = false;
+    if let Ok(rd) = std::fs::read_dir("/proc") {
+        for entry in rd.flatten() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if !name.chars().all(|c| c.is_ascii_digit()) {
+                continue;
+            }
+            if let Ok(comm) = std::fs::read_to_string(entry.path().join("comm")) {
+                match comm.trim() {
+                    "fcitx5" | "fcitx" => fcitx = true,
+                    "ibus-daemon" => ibus = true,
+                    _ => {}
+                }
+            }
+            if fcitx {
+                break;
+            }
+        }
+    }
+    if fcitx {
+        Some("fcitx")
+    } else if ibus {
+        Some("ibus")
+    } else {
+        None
+    }
+}
+
+fn apply_im_env(fw: &str) {
+    unsafe {
+        std::env::set_var("GTK_IM_MODULE", fw);
+        if !env_set("XMODIFIERS") {
+            std::env::set_var("XMODIFIERS", format!("@im={fw}"));
+        }
+        if !env_set("QT_IM_MODULE") {
+            std::env::set_var("QT_IM_MODULE", fw);
+        }
+    }
+}
+
+/// Best-effort pre-init: fill IM env if the launcher dropped it.
 fn ensure_ime_env() {
     if env_set("GTK_IM_MODULE") {
         return;
     }
-    let running = |name: &str| {
-        std::process::Command::new("pidof")
-            .arg(name)
-            .output()
-            .map(|o| o.status.success() && !o.stdout.is_empty())
-            .unwrap_or(false)
+    if let Some(fw) = detect_im() {
+        apply_im_env(fw);
+    }
+}
+
+/// After GTK is initialized, verify that a real IM module (not the built-in
+/// "simple" context) was loaded. If not, set the env and re-exec once.
+fn maybe_reexec_for_im() {
+    if env_set("EVERYTHING_IM_REEXEC") {
+        return;
+    }
+    let ctx = gtk::IMMulticontext::new();
+    use gtk::prelude::*;
+    let id = ctx.context_id().map(|s| s.to_string()).unwrap_or_default();
+    let simple = id.is_empty()
+        || id.contains("simple")
+        || id.contains("none");
+    if !simple {
+        return;
+    }
+    let Some(fw) = detect_im() else {
+        return;
     };
-    if running("fcitx5") || running("fcitx") {
-        unsafe {
-            std::env::set_var("GTK_IM_MODULE", "fcitx");
-        }
-        if !env_set("XMODIFIERS") {
-            unsafe {
-                std::env::set_var("XMODIFIERS", "@im=fcitx");
-            }
-        }
-        if !env_set("QT_IM_MODULE") {
-            unsafe {
-                std::env::set_var("QT_IM_MODULE", "fcitx");
-            }
-        }
-    } else if running("ibus-daemon") {
-        unsafe {
-            std::env::set_var("GTK_IM_MODULE", "ibus");
-        }
-        if !env_set("XMODIFIERS") {
-            unsafe {
-                std::env::set_var("XMODIFIERS", "@im=ibus");
-            }
-        }
+    apply_im_env(fw);
+    unsafe {
+        std::env::set_var("EVERYTHING_IM_REEXEC", "1");
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        use std::os::unix::process::CommandExt;
+        let _ = std::process::Command::new(exe)
+            .args(std::env::args_os().skip(1))
+            .exec();
     }
 }
 
 fn main() -> anyhow::Result<()> {
     ensure_ime_env();
+    // Initialize GTK early so we can verify whether an IM module actually loaded.
+    if gtk::init().is_ok() {
+        maybe_reexec_for_im();
+    }
     let config = Config::load()?;
     let gui_socket = gui_socket_path(&config);
     let self_exe = std::env::current_exe().ok();

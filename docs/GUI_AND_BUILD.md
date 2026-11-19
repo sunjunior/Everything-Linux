@@ -100,9 +100,15 @@ GUI 是标准 GTK3 应用，通过 GTK IM 模块使用系统输入法，本身�
 - 会话环境需导出 `GTK_IM_MODULE`、`XMODIFIERS`（fcitx 为 `GTK_IM_MODULE=fcitx`、`XMODIFIERS=@im=fcitx`）以及可用的 `DBUS_SESSION_BUS_ADDRESS`；
 - 启动后搜索框会自动获得焦点（`entry.grab_focus()`），从任务栏恢复或单实例唤起时也会重新聚焦，保证输入法立即可用。
 
-启动时若检测到 `GTK_IM_MODULE` 为空，程序会自动探测运行中的 `fcitx5`/`fcitx`/`ibus` 并在 GTK 初始化前补上
-`GTK_IM_MODULE`、`XMODIFIERS`（以及 `QT_IM_MODULE`），因此即使从早期启动、未携带输入法环境变量的文件管理器
-（例如 Thunar）双击启动，也能正常使用中文输入法。
+程序对输入法的处理与文件管理器/桌面环境无关，分两层自愈：
+
+1. **GTK 初始化前**：若 `GTK_IM_MODULE` 为空，扫描 `/proc` 探测运行中的 `fcitx5`/`fcitx`/`ibus-daemon`，
+   自动补上 `GTK_IM_MODULE`、`XMODIFIERS`、`QT_IM_MODULE`；
+2. **GTK 初始化后**：检查实际加载的输入法上下文，若仍是 `gtk-im-context-simple`（说明没有加载任
+   何输入法模块），则补全环境变量并**重新 exec 自身一次**（带 `EVERYTHING_IM_REEXEC=1` 防循环）。
+
+因此从 Thunar、Nautilus、Dolphin、Caja、Nemo、PCManFM 等任意文件管理器双击启动，都能使用中文输入法。
+唯一前提是系统已安装并运行了输入法框架（fcitx5 或 ibus）及其 GTK3 模块。
 
 若仍无法切换：确认焦点在搜索框、`fcitx5-remote -t` 能切换，并用 `fcitx5-diagnose` 检查 GTK 前端。
 
