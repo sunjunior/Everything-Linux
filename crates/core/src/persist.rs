@@ -1,181 +1,282 @@
+use std::fs::File;
+use std::io::{BufReader, BufWriter, Read, Write};
 use std::os::unix::ffi::OsStringExt;
 use std::path::Path;
-use std::sync::Arc;
-
-use arc_swap::ArcSwap;
 
 use crate::error::{Error, Result};
-use crate::index::IndexSnapshot;
-use crate::store::Store;
+use crate::model::EntryMeta;
+use crate::store::{Entry, SAME_FOLD, Store};
 
 const MAGIC: &[u8; 4] = b"ELDB";
-const VERSION: u32 = 2;
-
-fn put_u32(buf: &mut Vec<u8>, v: u32) {
-    buf.extend_from_slice(&v.to_le_bytes());
-}
-fn put_u64(buf: &mut Vec<u8>, v: u64) {
-    buf.extend_from_slice(&v.to_le_bytes());
-}
-fn put_u16(buf: &mut Vec<u8>, v: u16) {
-    buf.extend_from_slice(&v.to_le_bytes());
-}
-
-struct Reader<'a> {
-    buf: &'a [u8],
-    pos: usize,
-}
-impl<'a> Reader<'a> {
-    fn take(&mut self, n: usize) -> Result<&'a [u8]> {
-        if self.pos + n > self.buf.len() {
-            return Err(Error::Snapshot("unexpected EOF".into()));
-        }
-        let s = &self.buf[self.pos..self.pos + n];
-        self.pos += n;
-        Ok(s)
-    }
-    fn u8(&mut self) -> Result<u8> {
-        Ok(self.take(1)?[0])
-    }
-    fn u16(&mut self) -> Result<u16> {
-        let b = self.take(2)?;
-        Ok(u16::from_le_bytes([b[0], b[1]]))
-    }
-    fn u32(&mut self) -> Result<u32> {
-        let b = self.take(4)?;
-        Ok(u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
-    }
-    fn u64(&mut self) -> Result<u64> {
-        let b = self.take(8)?;
-        Ok(u64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]))
-    }
-}
+const VERSION: u32 = 3;
+const RECORD_LEN: usize = 41;
 
 pub fn save(store: &Store, path: &Path, generation: u64) -> Result<()> {
-    let mut raw = Vec::with_capacity(store.name_pool.len() + store.len() * 40);
-    raw.extend_from_slice(MAGIC);
-    put_u32(&mut raw, VERSION);
-    put_u64(&mut raw, generation);
-
-    put_u32(&mut raw, store.roots.len() as u32);
-    for root in &store.roots {
-        let bytes = root.path.as_os_str().as_encoded_bytes();
-        put_u16(&mut raw, bytes.len() as u16);
-        raw.extend_from_slice(bytes);
-        put_u32(&mut raw, root.slot);
-    }
-
-    put_u32(&mut raw, store.name_pool.len() as u32);
-    raw.extend_from_slice(&store.name_pool);
-
-    let live_count = store.live.iter().filter(|&&b| b).count();
-    put_u32(&mut raw, live_count as u32);
-    for slot in 0..store.len() {
-        let slot = slot as u32;
-        if !store.is_live(slot) {
-            continue;
-        }
-        let m = store.meta(slot).unwrap();
-        put_u32(&mut raw, store.name_offs[slot as usize]);
-        put_u32(&mut raw, store.parents[slot as usize]);
-        put_u8(&mut raw, m.kind as u8);
-        put_u8(&mut raw, m.flags);
-        put_u64(&mut raw, m.ino);
-        put_u64(&mut raw, m.dev);
-        put_u64(&mut raw, m.size);
-        put_u64(&mut raw, m.mtime as u64);
-        put_u64(&mut raw, m.created as u64);
-        put_u64(&mut raw, m.accessed as u64);
-    }
-
-    let compressed = zstd::encode_all(raw.as_slice(), 1)
-        .map_err(|e| Error::Snapshot(format!("compress: {e}")))?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
     let tmp = path.with_extension("tmp");
-    std::fs::write(&tmp, compressed)?;
+    {
+        let file = File::create(&tmp)?;
+        let mut enc = zstd::Encoder::new(BufWriter::new(file), 1)?;
+        enc.write_all(MAGIC)?;
+        enc.write_all(&VERSION.to_le_bytes())?;
+        w_u64(&mut enc, generation)?;
+
+        w_u32(&mut enc, store.roots.len() as u32)?;
+        for root in &store.roots {
+            let bytes = root.path.as_os_str().as_encoded_bytes();
+            w_u16(&mut enc, bytes.len() as u16)?;
+            enc.write_all(bytes)?;
+            w_u32(&mut enc, root.slot)?;
+        }
+
+        w_u32(&mut enc, store.name_pool.len() as u32)?;
+        enc.write_all(&store.name_pool)?;
+        w_u32(&mut enc, store.fold_pool.len() as u32)?;
+        enc.write_all(&store.fold_pool)?;
+
+        w_u32(&mut enc, store.entries.len() as u32)?;
+        w_u64(&mut enc, store.file_count())?;
+        w_u64(&mut enc, store.dir_count())?;
+
+        let mut buf = Vec::with_capacity(256 * 1024);
+        for slot in 0..store.entries.len() {
+            let e = store.entries[slot];
+            buf.push(store.is_live(slot as u32) as u8);
+            put_record(&mut buf, &e);
+            if buf.len() >= 240 * 1024 {
+                enc.write_all(&buf)?;
+                buf.clear();
+            }
+        }
+        if !buf.is_empty() {
+            enc.write_all(&buf)?;
+        }
+        let mut w = enc.finish()?;
+        w.flush()?;
+    }
     std::fs::rename(&tmp, path)?;
     Ok(())
 }
 
-fn put_u8(buf: &mut Vec<u8>, v: u8) {
-    buf.push(v);
+fn put_record(buf: &mut Vec<u8>, e: &Entry) {
+    buf.extend_from_slice(&e.size.to_le_bytes());
+    buf.extend_from_slice(&(e.mtime as u64).to_le_bytes());
+    buf.extend_from_slice(&e.created.to_le_bytes());
+    buf.extend_from_slice(&e.accessed.to_le_bytes());
+    buf.extend_from_slice(&e.name_off.to_le_bytes());
+    buf.extend_from_slice(&e.fold_off.to_le_bytes());
+    buf.extend_from_slice(&e.parent.to_le_bytes());
+    buf.extend_from_slice(&e.name_len.to_le_bytes());
+    buf.push(e.kind);
+    buf.push(e.flags);
+}
+
+fn parse_record(b: &[u8; RECORD_LEN - 1]) -> Entry {
+    let u32_at = |i: usize| u32::from_le_bytes(b[i..i + 4].try_into().unwrap());
+    let u64_at = |i: usize| u64::from_le_bytes(b[i..i + 8].try_into().unwrap());
+    Entry {
+        size: u64_at(0),
+        mtime: u64_at(8) as i64,
+        created: u32_at(16),
+        accessed: u32_at(20),
+        name_off: u32_at(24),
+        fold_off: u32_at(28),
+        parent: u32_at(32),
+        name_len: u16::from_le_bytes(b[36..38].try_into().unwrap()),
+        kind: b[38],
+        flags: b[39],
+        first_child: crate::model::NULL_SLOT,
+        next_sibling: crate::model::NULL_SLOT,
+    }
+}
+
+fn w_u16<W: Write>(w: &mut W, v: u16) -> Result<()> {
+    w.write_all(&v.to_le_bytes())?;
+    Ok(())
+}
+fn w_u32<W: Write>(w: &mut W, v: u32) -> Result<()> {
+    w.write_all(&v.to_le_bytes())?;
+    Ok(())
+}
+fn w_u64<W: Write>(w: &mut W, v: u64) -> Result<()> {
+    w.write_all(&v.to_le_bytes())?;
+    Ok(())
+}
+
+fn r_u8<R: Read>(r: &mut R) -> Result<u8> {
+    let mut b = [0u8; 1];
+    r.read_exact(&mut b)?;
+    Ok(b[0])
+}
+fn r_u16<R: Read>(r: &mut R) -> Result<u16> {
+    let mut b = [0u8; 2];
+    r.read_exact(&mut b)?;
+    Ok(u16::from_le_bytes(b))
+}
+fn r_u32<R: Read>(r: &mut R) -> Result<u32> {
+    let mut b = [0u8; 4];
+    r.read_exact(&mut b)?;
+    Ok(u32::from_le_bytes(b))
+}
+fn r_u64<R: Read>(r: &mut R) -> Result<u64> {
+    let mut b = [0u8; 8];
+    r.read_exact(&mut b)?;
+    Ok(u64::from_le_bytes(b))
 }
 
 pub fn load(path: &Path) -> Result<Option<(Store, u64)>> {
     if !path.exists() {
         return Ok(None);
     }
-    let data = std::fs::read(path)?;
-    let raw = zstd::decode_all(data.as_slice())
-        .map_err(|e| Error::Snapshot(format!("decompress: {e}")))?;
-    let mut r = Reader {
-        buf: &raw,
-        pos: 0,
-    };
-    if r.take(4)? != MAGIC {
+    let file = File::open(path)?;
+    let mut dec = zstd::Decoder::new(BufReader::new(file))?;
+    let mut magic = [0u8; 4];
+    dec.read_exact(&mut magic)?;
+    if &magic != MAGIC {
         return Err(Error::Snapshot("bad magic".into()));
     }
-    let version = r.u32()?;
-    if version != 1 && version != VERSION {
-        return Err(Error::Snapshot(format!("unsupported version {version}")));
+    let version = r_u32(&mut dec)?;
+    match version {
+        1 | 2 => load_legacy(dec, version).map(Some),
+        3 => load_v3(dec).map(Some),
+        v => Err(Error::Snapshot(format!("unsupported version {v}"))),
     }
-    let generation = r.u64()?;
+}
 
+fn load_v3<R: Read>(mut r: R) -> Result<(Store, u64)> {
+    let generation = r_u64(&mut r)?;
     let mut store = Store::new();
-    let root_count = r.u32()?;
+
+    let root_count = r_u32(&mut r)?;
     for _ in 0..root_count {
-        let len = r.u16()? as usize;
-        let bytes = r.take(len)?;
-        let slot = r.u32()?;
-        let path = std::path::PathBuf::from(std::ffi::OsString::from_vec(bytes.to_vec()));
-        store.roots.push(crate::model::RootInfo { path, slot });
+        let len = r_u16(&mut r)? as usize;
+        let mut bytes = vec![0u8; len];
+        r.read_exact(&mut bytes)?;
+        let slot = r_u32(&mut r)?;
+        store.roots.push(crate::model::RootInfo {
+            path: std::path::PathBuf::from(std::ffi::OsString::from_vec(bytes)),
+            slot,
+        });
     }
 
-    let pool_len = r.u32()? as usize;
-    store.name_pool = r.take(pool_len)?.to_vec();
+    let pool_len = r_u32(&mut r)? as usize;
+    store.name_pool = vec![0u8; pool_len];
+    r.read_exact(&mut store.name_pool)?;
 
-    let count = r.u32()?;
+    let fold_len = r_u32(&mut r)? as usize;
+    store.fold_pool = vec![0u8; fold_len];
+    r.read_exact(&mut store.fold_pool)?;
+
+    let slot_count = r_u32(&mut r)? as usize;
+    for root in &store.roots {
+        if root.slot as usize >= slot_count {
+            return Err(Error::Snapshot("root slot out of range".into()));
+        }
+    }
+    let file_count = r_u64(&mut r)?;
+    let dir_count = r_u64(&mut r)?;
+
+    store.entries.reserve(slot_count);
+    store.live.resize(slot_count.div_ceil(64), 0);
+    const CHUNK: usize = 8192;
+    let mut rec = vec![0u8; CHUNK * RECORD_LEN];
+    let mut done = 0usize;
+    while done < slot_count {
+        let take = (slot_count - done).min(CHUNK);
+        r.read_exact(&mut rec[..take * RECORD_LEN])?;
+        for i in 0..take {
+            let base = i * RECORD_LEN;
+            let live = rec[base] != 0;
+            let entry = parse_record(rec[base + 1..base + RECORD_LEN].try_into().unwrap());
+            let slot = done + i;
+            if live {
+                if entry.parent != crate::model::NULL_SLOT && entry.parent as usize >= slot_count {
+                    return Err(Error::Snapshot("parent slot out of range".into()));
+                }
+                if entry.name_off as usize + entry.name_len as usize > store.name_pool.len() {
+                    return Err(Error::Snapshot("name offset out of range".into()));
+                }
+                if entry.fold_off != SAME_FOLD && entry.fold_off as usize >= store.fold_pool.len() {
+                    return Err(Error::Snapshot("fold offset out of range".into()));
+                }
+            }
+            if live {
+                store.live[slot / 64] |= 1 << (slot % 64);
+            } else {
+                store.free.push(slot as u32);
+            }
+            store.entries.push(entry);
+        }
+        done += take;
+    }
+    store.file_count = file_count;
+    store.dir_count = dir_count;
+    store.rebuild_after_load();
+    Ok((store, generation))
+}
+
+fn load_legacy<R: Read>(mut r: R, version: u32) -> Result<(Store, u64)> {
+    let generation = r_u64(&mut r)?;
+    let mut store = Store::new();
+
+    let root_count = r_u32(&mut r)?;
+    for _ in 0..root_count {
+        let len = r_u16(&mut r)? as usize;
+        let mut bytes = vec![0u8; len];
+        r.read_exact(&mut bytes)?;
+        let slot = r_u32(&mut r)?;
+        store.roots.push(crate::model::RootInfo {
+            path: std::path::PathBuf::from(std::ffi::OsString::from_vec(bytes)),
+            slot,
+        });
+    }
+
+    let pool_len = r_u32(&mut r)? as usize;
+    let mut pool = vec![0u8; pool_len];
+    r.read_exact(&mut pool)?;
+
+    let count = r_u32(&mut r)?;
     for _ in 0..count {
-        let name_off = r.u32()?;
-        let parent = r.u32()?;
-        let kind = r.u8()?;
-        let flags = r.u8()?;
-        let ino = r.u64()?;
-        let dev = r.u64()?;
-        let size = r.u64()?;
-        let mtime = r.u64()? as i64;
+        let name_off = r_u32(&mut r)? as usize;
+        let parent = r_u32(&mut r)?;
+        let kind = r_u8(&mut r)?;
+        let flags = r_u8(&mut r)?;
+        let _ino = r_u64(&mut r)?;
+        let _dev = r_u64(&mut r)?;
+        let size = r_u64(&mut r)?;
+        let mtime = r_u64(&mut r)? as i64;
         let (created, accessed) = if version >= 2 {
-            (r.u64()? as i64, r.u64()? as i64)
+            (r_u64(&mut r)? as i64, r_u64(&mut r)? as i64)
         } else {
             (mtime, mtime)
         };
-        let meta = crate::model::EntryMeta {
-            ino,
-            dev,
-            kind: crate::model::EntryType::from_u8(kind),
-            size,
-            mtime,
-            created,
-            accessed,
-            flags,
-        };
-        let slot = store.add_entry(parent, name_off, meta);
-        debug_assert_eq!(slot, store.len() as u32 - 1);
+        if name_off >= pool.len() {
+            return Err(Error::Snapshot("bad name offset".into()));
+        }
+        let rest = &pool[name_off..];
+        let end = rest.iter().position(|&b| b == 0).unwrap_or(rest.len());
+        store.add_entry(
+            parent,
+            &rest[..end],
+            EntryMeta {
+                kind: crate::model::EntryType::from_u8(kind),
+                size,
+                mtime,
+                created,
+                accessed,
+                flags,
+            },
+        );
     }
-
-    for slot in 0..store.len() {
-        let slot = slot as u32;
-        let name = store.name(slot).to_vec();
-        store.name_dedup.insert(name, store.name_offs[slot as usize]);
-    }
-
-    Ok(Some((store, generation)))
+    Ok((store, generation))
 }
 
-pub type SharedIndex = Arc<ArcSwap<IndexSnapshot>>;
-
-pub fn publish(index: &SharedIndex, snapshot: IndexSnapshot) {
-    index.store(Arc::new(snapshot));
+/// Hint the allocator to return freed pages after large snapshot operations.
+pub fn trim_allocator() {
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    unsafe {
+        libc::malloc_trim(0);
+    }
 }

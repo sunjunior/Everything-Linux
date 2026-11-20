@@ -1,14 +1,13 @@
 use std::path::PathBuf;
 
-use everything_core::index::{build_snapshot, IndexSnapshot};
 use everything_core::model::{EntryMeta, EntryType, F_HIDDEN, NULL_SLOT, SlotId};
+use everything_core::store::Store;
 
-fn store_with(n: usize) -> everything_core::store::Store {
-    let mut s = everything_core::store::Store::new();
-    let root_name = s.intern_name(b"root");
+fn store_with(n: usize) -> (Store, SlotId) {
+    let mut s = Store::new();
     let root = s.add_entry(
         NULL_SLOT,
-        root_name,
+        b"root",
         EntryMeta {
             kind: EntryType::Dir,
             flags: F_HIDDEN,
@@ -21,10 +20,9 @@ fn store_with(n: usize) -> everything_core::store::Store {
     });
     for i in 0..n {
         let name = format!("file_{i:04}.txt");
-        let off = s.intern_name(name.as_bytes());
         s.add_entry(
             root,
-            off,
+            name.as_bytes(),
             EntryMeta {
                 kind: EntryType::File,
                 size: i as u64,
@@ -32,99 +30,104 @@ fn store_with(n: usize) -> everything_core::store::Store {
             },
         );
     }
-    s
+    (s, root)
 }
 
-fn names_in_order(snap: &IndexSnapshot) -> Vec<String> {
-    snap.by_name
+fn names_in_order(s: &Store) -> Vec<String> {
+    s.name_order()
         .iter()
-        .map(|&slot| String::from_utf8_lossy(snap.name(slot)).into_owned())
+        .map(|&slot| String::from_utf8_lossy(s.name(slot)).into_owned())
         .collect()
 }
 
 #[test]
-fn incremental_insert_matches_full_rebuild() {
-    let mut s = store_with(20);
-    let before = build_snapshot(&s, 1);
-
-    let off = s.intern_name(b"aaa_new.txt");
-    let slot = s.add_entry(s.roots[0].slot, off, EntryMeta {
-        kind: EntryType::File,
-        ..Default::default()
-    });
-
-    let incremental = before.apply_changes(&s, &[slot]);
-    let full = build_snapshot(&s, 2);
-    assert_eq!(names_in_order(&incremental), names_in_order(&full));
-    assert_eq!(incremental.file_count, full.file_count);
-}
-
-#[test]
-fn incremental_delete_matches_full_rebuild() {
-    let mut s = store_with(20);
-    let before = build_snapshot(&s, 1);
-    let victim: SlotId = s.roots[0].slot + 5;
-    s.remove_entry(victim);
-
-    let incremental = before.apply_changes(&s, &[victim]);
-    let full = build_snapshot(&s, 2);
-    assert_eq!(names_in_order(&incremental), names_in_order(&full));
-    assert_eq!(incremental.file_count, full.file_count);
-}
-
-#[test]
-fn incremental_modify_and_rename_match_full_rebuild() {
-    let mut s = store_with(20);
-    let before = build_snapshot(&s, 1);
-    let slot: SlotId = s.roots[0].slot + 7;
-
-    let old_parent = s.parent(slot).unwrap();
-    let old_name_off = s.name_offs[slot as usize];
-    s.by_key.remove(&everything_core::model::EntryKey {
-        parent: old_parent,
-        name_off: old_name_off,
-    });
-    let new_off = s.intern_name(b"zzz_renamed.bin");
-    s.name_offs[slot as usize] = new_off;
-    s.by_key.insert(
-        everything_core::model::EntryKey {
-            parent: old_parent,
-            name_off: new_off,
-        },
-        slot,
-    );
-    s.set_meta(slot, EntryMeta {
-        kind: EntryType::File,
-        size: 999,
-        mtime: 1234,
-        ..Default::default()
-    });
-
-    let incremental = before.apply_changes(&s, &[slot]);
-    let full = build_snapshot(&s, 2);
-    assert_eq!(names_in_order(&incremental), names_in_order(&full));
-    assert_eq!(incremental.entry(slot).size, 999);
-    assert_eq!(incremental.file_count, full.file_count);
-}
-
-#[test]
-fn duplicate_names_are_still_sorted_correctly() {
-    let mut s = store_with(5);
-    let root = s.roots[0].slot;
-    for _ in 0..5 {
-        let off = s.intern_name(b"file_0001.txt");
-        s.add_entry(root, off, EntryMeta {
+fn insert_updates_order_and_counts() {
+    let (mut s, root) = store_with(20);
+    let before = names_in_order(&s);
+    s.add_entry(
+        root,
+        b"aaa_new.txt",
+        EntryMeta {
             kind: EntryType::File,
             ..Default::default()
-        });
+        },
+    );
+    let after = names_in_order(&s);
+    assert_eq!(after.len(), before.len() + 1);
+    assert_eq!(after[0], "aaa_new.txt");
+    assert_eq!(s.file_count(), 21);
+    assert_eq!(s.dir_count(), 1);
+}
+
+#[test]
+fn delete_removes_from_order_and_counts() {
+    let (mut s, _root) = store_with(20);
+    let victim: SlotId = 5;
+    assert!(s.remove_entry(victim));
+    assert!(!s.is_live(victim));
+    assert_eq!(s.file_count(), 19);
+    assert!(!names_in_order(&s).contains(&"file_0004.txt".to_string()));
+}
+
+#[test]
+fn rename_is_remove_plus_insert() {
+    let (mut s, root) = store_with(20);
+    let slot: SlotId = 7;
+    let old_name = String::from_utf8_lossy(s.name(slot)).into_owned();
+    s.remove_entry(slot);
+    let new_slot = s.add_entry(
+        root,
+        b"zzz_renamed.bin",
+        EntryMeta {
+            kind: EntryType::File,
+            size: 999,
+            mtime: 1234,
+            ..Default::default()
+        },
+    );
+    assert_eq!(s.entry(new_slot).unwrap().size, 999);
+    assert_eq!(s.entry(new_slot).unwrap().mtime, 1234);
+    let order = names_in_order(&s);
+    assert!(!order.contains(&old_name));
+    assert_eq!(order.last().unwrap(), "zzz_renamed.bin");
+    assert_eq!(s.file_count(), 20);
+}
+
+#[test]
+fn duplicate_names_are_sorted_by_slot() {
+    let (mut s, root) = store_with(5);
+    let mut slots = Vec::new();
+    for _ in 0..5 {
+        slots.push(s.add_entry(
+            root,
+            b"file_0001.txt",
+            EntryMeta {
+                kind: EntryType::File,
+                ..Default::default()
+            },
+        ));
     }
-    let before = build_snapshot(&s, 1);
-    let off = s.intern_name(b"file_0001.txt");
-    let slot = s.add_entry(root, off, EntryMeta {
-        kind: EntryType::File,
-        ..Default::default()
-    });
-    let incremental = before.apply_changes(&s, &[slot]);
-    let full = build_snapshot(&s, 2);
-    assert_eq!(names_in_order(&incremental), names_in_order(&full));
+    let positions: Vec<usize> = slots
+        .iter()
+        .map(|&slot| s.name_order().iter().position(|&x| x == slot).unwrap())
+        .collect();
+    assert!(positions.windows(2).all(|w| w[0] < w[1]));
+}
+
+#[test]
+fn many_inserts_still_sort() {
+    let (mut s, root) = store_with(0);
+    for i in (0..50).rev() {
+        s.add_entry(
+            root,
+            format!("bulk_{i:03}").as_bytes(),
+            EntryMeta {
+                kind: EntryType::File,
+                ..Default::default()
+            },
+        );
+    }
+    let order = names_in_order(&s);
+    assert_eq!(order.len(), 51);
+    assert!(order.windows(2).all(|w| w[0] <= w[1]));
 }

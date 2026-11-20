@@ -28,22 +28,16 @@ impl EntryType {
 pub const F_HIDDEN: u8 = 1 << 0;
 pub const F_NOACCESS: u8 = 1 << 1;
 
+/// Transient input used while walking the filesystem. The index itself stores
+/// the compact `store::Entry` instead.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct EntryMeta {
-    pub ino: u64,
-    pub dev: u64,
     pub kind: EntryType,
     pub size: u64,
     pub mtime: i64,
     pub created: i64,
     pub accessed: i64,
     pub flags: u8,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct EntryKey {
-    pub parent: SlotId,
-    pub name_off: u32,
 }
 
 #[derive(Clone, Debug)]

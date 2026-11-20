@@ -9,7 +9,7 @@ Everything 在 Windows 上的极速来自两个系统事实：直接解析 NTFS 
 - 并行目录树遍历建索引；
 - `inotify` 监听实时变化（watch 失败/溢出时子树重扫或全量重建兜底）；
 - zstd 快照实现重启秒开与周期对账；
-- 内存中的多排序数组 + 布尔条件图查询引擎，复刻 Everything "查询时只做一次顺序扫描" 的核心思路。
+- 48 字节紧凑条目 + 名字池 + 并行布尔条件图查询引擎，复刻 Everything "查询时只做一次顺序扫描" 的核心思路。
 
 ## 功能
 
@@ -36,12 +36,12 @@ Everything 在 Windows 上的极速来自两个系统事实：直接解析 NTFS 
 
 ```
 [walker 并行遍历] ─┐
-                   ├─→ [Store: SoA + 字符串池] ─→ [IndexSnapshot: 多排序数组] ─→ [ArcSwap 发布]
-[monitor inotify] ─┘                                        │
-       ▲                                                    ▼
-       │ 事件合并/溢出兜底                          [Query Engine: term 图 + 特化求值]
-       │                                                    │
-[zstd 快照] ←─────────────────────────────── [CLI / GTK GUI / Unix socket IPC]
+                   ├─→ [Store: 48B 紧凑条目 + 名字池] ─→ [并行查询引擎: term 图 + 特化求值]
+[monitor inotify] ─┘              ▲                              │
+       ▲                          │ 增量修改                      │
+       │ 事件合并/溢出兜底          └──────────────────────────────┘
+       │
+[zstd 快照（脏时流式落盘）] ←──── [CLI / GTK GUI / Unix socket IPC]
 ```
 
 工程结构：
@@ -57,7 +57,7 @@ scripts/check-deps.sh  目标机依赖自检
 build-static.sh      静态/分发构建
 ```
 
-关键设计：`IndexSnapshot` 用 `Arc` 共享名字池与基础条目，增量更新只维护变更条目的 `entry_overrides` 和排序数组位置，通过 `arc_swap` 原子发布，查询线程全程无锁。
+关键设计：只有一份紧凑索引。每条 `Entry` 固定 48 字节，名字（及必要的折叠名）存于连续字节池，父目录用 `first_child`/`next_sibling` 链访问；inotify 事件直接增量修改索引并递增 generation，查询在 `RwLock` 读锁下按 slot 顺序并行扫描，命中结果再按需排序。快照仅在索引变脏时按 `snapshot_interval_secs` 流式写入 zstd，并对快照/socket 等内部路径做索引与事件排除，避免自我触发。
 
 ## 构建
 
@@ -144,17 +144,20 @@ GUI 行为：关闭窗口隐藏到任务栏，双击托盘图标恢复，右键�
 
 中文输入：GUI 使用系统 GTK3 输入法模块（fcitx5 / ibus）。即使启动它的文件管理器没有携带 `GTK_IM_MODULE`/`XMODIFIERS`（如从 Thunar 双击），程序也会在 GTK 初始化前后自动探测运行中的输入法框架、补全环境变量，必要时重新 exec 自身一次，因此与具体文件管理器/桌面环境无关。搜索框在启动和窗口恢复时自动聚焦。
 
-## 性能（10 万文件基准）
+## 性能（106 万条目实机）
 
-| 查询 | 引擎耗时（P50） |
-|---|---|
-| 子串 | 3.3 ms |
-| 通配符 | 8.1 ms |
-| 正则 | 13.0 ms |
-| 全路径 | 53.3 ms |
-| 按大小排序 | 10.9 ms |
+| 指标 | 结果 |
+|---|---:|
+| 守护进程 RSS | 112–114 MB（峰值 118–123 MB） |
+| 快照大小 | 25 MB |
+| 冷索引 | 2.7 s |
+| 重启到可查询 | 0.9 s |
+| 子串查询 | 8–12 ms |
+| 通配符查询 | 14 ms |
+| 全路径查询 | 60–65 ms |
+| 按大小排序 | 11 ms |
 
-创建文件到查询可见约 40 ms（含 CLI 进程开销）；快照加载约 158 ms。详见 [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md)。
+与 Windows Everything 1.4 官方数据（100 万文件约 100 MB 内存、45 MB 磁盘、约 1 分钟索引）处于同一内存级别，磁盘占用约为其一半。详见 [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md)。
 
 ## 限制
 

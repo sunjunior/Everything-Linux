@@ -82,7 +82,7 @@ fn main() -> anyhow::Result<()> {
     }
 
     // A moved executable invalidates auto-resolved roots and the old snapshot.
-    let mut engine = Engine::open(config, !no_snapshot && !roots_changed)?;
+    let engine = Engine::open(config, !no_snapshot && !roots_changed)?;
     tracing::info!(
         "index loaded: {} files, {} dirs (generation {})",
         engine.stats().0,
@@ -120,7 +120,10 @@ fn main() -> anyhow::Result<()> {
             }
             tracing::info!(
                 "index ready: {} files, {} dirs (generation {}), watches {}",
-                eng.stats().0, eng.stats().1, eng.stats().2, eng.watch_count()
+                eng.stats().0,
+                eng.stats().1,
+                eng.stats().2,
+                eng.watch_count()
             );
             let _ = eng.save();
             let _ = eng.config.save();
@@ -204,10 +207,9 @@ fn dispatch(
             let opts = crate_options(&req);
             match engine.query(&req.text, opts) {
                 Ok(res) => {
-                    let snap = engine.snapshot();
                     let mut buf = Vec::new();
                     for slot in res.slots {
-                        snap.path(slot, &mut buf);
+                        engine.path(slot, &mut buf);
                         out.push(String::from_utf8_lossy(&buf).into_owned());
                     }
                     Header {
@@ -242,12 +244,15 @@ fn dispatch(
             }
         }
         "add" => match engine.add_root(std::path::Path::new(&req.text)) {
-            Ok(()) => {
+            Ok(_) => {
                 engine.config.mark_manual_roots();
                 engine.rebuild();
                 let _ = engine.save();
                 let _ = engine.config.save();
-                Header { ok: true, ..Header::default() }
+                Header {
+                    ok: true,
+                    ..Header::default()
+                }
             }
             Err(e) => Header::error(e.to_string()),
         },
@@ -257,31 +262,46 @@ fn dispatch(
                 engine.rebuild();
                 let _ = engine.save();
                 let _ = engine.config.save();
-                Header { ok: true, ..Header::default() }
+                Header {
+                    ok: true,
+                    ..Header::default()
+                }
             }
             Err(e) => Header::error(e.to_string()),
         },
         "auto-root" => {
             let fe = std::path::PathBuf::from(&req.text);
             match engine.set_auto_root(&fe) {
-                Ok(_) => Header { ok: true, ..Header::default() },
+                Ok(_) => Header {
+                    ok: true,
+                    ..Header::default()
+                },
                 Err(e) => Header::error(e.to_string()),
             }
         }
         "reindex" => match engine.reindex() {
             Ok(()) => {
                 let _ = engine.config.save();
-                Header { ok: true, ..Header::default() }
+                Header {
+                    ok: true,
+                    ..Header::default()
+                }
             }
             Err(e) => Header::error(e.to_string()),
         },
         "save" => match engine.save() {
-            Ok(()) => Header { ok: true, ..Header::default() },
+            Ok(()) => Header {
+                ok: true,
+                ..Header::default()
+            },
             Err(e) => Header::error(e.to_string()),
         },
         "shutdown" => {
             running.store(false, Ordering::SeqCst);
-            Header { ok: true, ..Header::default() }
+            Header {
+                ok: true,
+                ..Header::default()
+            }
         }
         other => Header::error(format!("unknown command: {other}")),
     }
@@ -301,7 +321,6 @@ fn crate_options(req: &Request) -> everything_core::model::QueryOptions {
         limit: if o.limit == 0 { 100_000 } else { o.limit },
     }
 }
-
 
 fn print_help() {
     println!("everythingd - Everything-like index daemon for Linux\n");

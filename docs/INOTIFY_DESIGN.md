@@ -35,29 +35,29 @@ libc inotify fd (非阻塞)
        ├─ IGNORED / MOVE_SELF → Rescan（重挂 watch + 子树对账）
        ├─ IN_Q_OVERFLOW / UNMOUNT → Overflow（全量重建）
        └─ crossbeam channel → Engine::tick()
-                                └─ 应用变更到 Store，收集 changed slots
-                                      └─ 防抖后 apply_changes() 原子发布新快照
+                                └─ 防抖后直接增量修改 Store（不复制索引）
+                                      └─ 递增 generation，按需落盘快照
 ```
 
-## 3. 为什么不用"每次事件都全量重建"
+## 3. 为什么不再维护"快照副本"
 
-v0.1 最初每次变更都重建全部 `by_name` 数组：复制所有名字 + rayon 排序 10 万条目约需数十毫秒，百万级会更慢。
+v0.1 同时保留可变 `Store` 和不可变 `IndexSnapshot`，每次变更都要复制名字池、重建排序数组并通过 `ArcSwap` 发布。百万级时两份索引常驻约 300 MB，且快照写入会产生数十 MB 的临时缓冲。
 
-现在改为**增量快照更新** `IndexSnapshot::apply_changes(store, changed)`：
+v0.2 改为**单一紧凑索引**：
 
-- 对每个变更 slot：
-  1. 用二分查找在 `by_name` / `by_name_cs` 中定位旧名字的位置并删除（数组按 `(name, slot)` 排序，二分key一致）；
-  2. 从 `by_parent` 移除旧的父→子关系；
-  3. 从 Store 读取新名字/元数据，追加到名字池尾部（旧偏移保持有效），更新 `entries[slot]`；
-  4. 按新名字二分插入 `by_name` / `by_name_cs`，更新 `by_parent` 和文件/目录计数；
-  5. 删除条目则标记 `kind=Other, name_len=0`。
-- 通过 `arc_swap::ArcSwap` 一次性发布新快照，查询线程零锁。
-- 复杂度从 O(n log n) 降为 O(k · (log n + n/2 插入位移))，k=变更条目数。实测比全量重建快一个数量级。
+- 每条 `Entry` 固定 48 字节，名字和折叠名存在连续字节池中，不再有 `EntryMeta`/`SnapEntry` 两份元数据；
+- 父目录用 `first_child` / `next_sibling` 链访问，删除了 `DashMap`、`HashMap<parent, Vec<child>>` 和 `by_name` / `by_name_cs` 排序数组；
+- inotify 事件在写锁内直接修改 `Store`，防抖结束后只递增 generation，不再复制整个索引；
+- 查询在 `RwLock` 读锁下按 slot 顺序并行扫描，只对命中结果排序，因此不需要维护全局排序数组；
+- 名字折叠与子串查找复用缓冲区，`memchr::memmem::Finder` 每次查询只构造一次；
+- 快照仅在 generation 变化时按 `snapshot_interval_secs` 流式写入 zstd，保存后调用 `malloc_trim(0)` 归还页；
+- 快照文件、临时文件与 socket 等内部路径在扫描和事件处理中都会被排除，保存快照不会触发新的索引更新。
+
+实测 106 万条目：守护进程 RSS 112–114 MB、快照 25 MB、冷索引 2.7 s、重启到可查询 0.9 s。
 
 ### 正确性保证
 
-`crates/core/tests/incremental.rs` 用 4 个测试对比"增量结果"与"全量重建结果"：
-插入、删除、改名+元数据修改、重名文件场景，均要求排序数组与计数完全一致。
+`crates/core/tests/incremental.rs` 用 5 个测试覆盖插入、删除、改名、重名排序与批量插入；`store_layout.rs` 校验 48 字节布局、折叠名复用、父子链、路径重建与计数；`persist.rs` 校验 v3 快照往返与 v2 旧快照兼容。
 
 ## 4. 事件可靠性兜底
 

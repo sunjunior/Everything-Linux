@@ -20,6 +20,8 @@ pub struct WalkStats {
 
 pub struct WalkOptions<'a> {
     pub exclude: &'a [String],
+    /// Internal files (snapshot, socket) that must never enter the index.
+    pub skip: &'a [std::path::PathBuf],
     pub index_hidden: bool,
     pub follow_symlinks: bool,
     pub threads: usize,
@@ -29,7 +31,10 @@ fn is_hidden(name: &OsStr) -> bool {
     name.as_bytes().first() == Some(&b'.')
 }
 
-fn excluded(path: &Path, exclude: &[String]) -> bool {
+fn excluded(path: &Path, exclude: &[String], skip: &[std::path::PathBuf]) -> bool {
+    if skip.iter().any(|p| path == p) {
+        return true;
+    }
     let s = path.to_string_lossy();
     exclude.iter().any(|pat| {
         if let Some(suffix) = pat.strip_prefix('*') {
@@ -110,8 +115,6 @@ fn entry_meta(md: &std::fs::Metadata, path: &Path) -> EntryMeta {
     }
     let (created, accessed, modified) = times_of(path, md);
     EntryMeta {
-        ino: md.ino(),
-        dev: md.dev(),
         kind,
         size: md.size(),
         mtime: modified,
@@ -136,7 +139,8 @@ pub fn scan_root<F>(
 where
     F: Fn(&Path) + Sync,
 {
-    let root = std::fs::canonicalize(root).with_context(|| format!("canonicalize {}", root.display()))?;
+    let root =
+        std::fs::canonicalize(root).with_context(|| format!("canonicalize {}", root.display()))?;
     let stats = AtomicU64::new(0);
     let errors = AtomicU64::new(0);
 
@@ -156,8 +160,7 @@ where
         meta.flags |= F_HIDDEN;
         let (root_slot, root_idx) = {
             let mut s = store.write();
-            let name_off = s.intern_name(&root_name);
-            let slot = s.add_entry(NULL_SLOT, name_off, meta);
+            let slot = s.add_entry(NULL_SLOT, &root_name, meta);
             let idx = s.roots.len();
             s.roots.push(RootInfo {
                 path: root.clone(),
@@ -169,14 +172,7 @@ where
         stats.fetch_add(1, Ordering::Relaxed);
 
         walk_dir(
-            &root,
-            root_slot,
-            root_idx,
-            store,
-            opts,
-            on_dir,
-            &stats,
-            &errors,
+            &root, root_slot, root_idx, store, opts, on_dir, &stats, &errors,
         );
         Ok::<(), anyhow::Error>(())
     })?;
@@ -226,7 +222,7 @@ fn walk_dir<F>(
         if !opts.index_hidden && is_hidden(&name) {
             continue;
         }
-        if excluded(&path, opts.exclude) {
+        if excluded(&path, opts.exclude, opts.skip) {
             continue;
         }
         let md = match meta_of(&path, opts.follow_symlinks) {
@@ -250,8 +246,7 @@ fn walk_dir<F>(
 
         let slot = {
             let mut s = store.write();
-            let name_off = s.intern_name(name.as_bytes());
-            let slot = s.add_entry(parent_slot, name_off, meta);
+            let slot = s.add_entry(parent_slot, name.as_bytes(), meta);
             let _ = root_idx;
             slot
         };
@@ -291,32 +286,18 @@ pub fn scan_subtree<F>(
     );
 }
 
-pub fn ino_of(md: &std::fs::Metadata) -> u64 {
-    md.ino()
-}
-
-pub fn dev_of(md: &std::fs::Metadata) -> u64 {
-    md.dev()
-}
-
 pub fn mtime_of(md: &std::fs::Metadata) -> i64 {
     md.mtime()
 }
 
-pub fn add_single(
-    path: &Path,
-    parent: u32,
-    store: &SharedStore,
-) -> anyhow::Result<Option<u32>> {
+pub fn add_single(path: &Path, parent: u32, store: &SharedStore) -> anyhow::Result<Option<u32>> {
     let md = meta_of(path, false)?;
     let meta = entry_meta(&md, path);
     let name = path.file_name().unwrap_or_default();
     let mut s = store.write();
-    let name_off = s.intern_name(name.as_bytes());
-    let existing = s.lookup(parent, name_off);
-    if let Some(slot) = existing {
+    if let Some(slot) = s.find_child(parent, name.as_bytes()) {
         s.set_meta(slot, meta);
         return Ok(Some(slot));
     }
-    Ok(Some(s.add_entry(parent, name_off, meta)))
+    Ok(Some(s.add_entry(parent, name.as_bytes(), meta)))
 }

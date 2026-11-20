@@ -31,7 +31,10 @@ pub enum FsEvent {
     CreateDir(PathBuf),
     Modify(PathBuf),
     Delete(PathBuf),
-    Rename { from: PathBuf, to: PathBuf },
+    Rename {
+        from: PathBuf,
+        to: PathBuf,
+    },
     /// A watched directory disappeared or was moved; its watch must be re-established
     /// and its subtree reconciled.
     Rescan(PathBuf),
@@ -146,7 +149,10 @@ fn reader_loop(fd: RawFd, tx: Sender<FsEvent>, wd_paths: Arc<RwLock<HashMap<i32,
                 break;
             }
             let name_bytes = &buf[pos..pos + len];
-            let name_end = name_bytes.iter().position(|&b| b == 0).unwrap_or(name_bytes.len());
+            let name_end = name_bytes
+                .iter()
+                .position(|&b| b == 0)
+                .unwrap_or(name_bytes.len());
             let name = OsString::from_vec(name_bytes[..name_end].to_vec());
             pos += len;
             let is_dir = mask & libc::IN_ISDIR != 0;
@@ -174,10 +180,7 @@ fn reader_loop(fd: RawFd, tx: Sender<FsEvent>, wd_paths: Arc<RwLock<HashMap<i32,
             if mask & libc::IN_MOVED_TO != 0 {
                 match cookies.remove(&cookie) {
                     Some((from, _)) => {
-                        let _ = tx.send(FsEvent::Rename {
-                            from,
-                            to: full,
-                        });
+                        let _ = tx.send(FsEvent::Rename { from, to: full });
                     }
                     None => {
                         let ev = if is_dir {
@@ -229,7 +232,7 @@ pub fn slot_for_path(store: &crate::store::Store, path: &Path) -> Option<u32> {
             let mut slot = root.slot;
             for comp in rel.components() {
                 let name = comp.as_os_str().as_encoded_bytes();
-                slot = store.lookup_name(slot, name)?;
+                slot = store.find_child(slot, name)?;
             }
             return Some(slot);
         }

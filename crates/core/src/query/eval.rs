@@ -1,39 +1,35 @@
+use memchr::memmem::Finder;
+use rayon::prelude::*;
 use regex::RegexBuilder;
 
 use crate::error::{Error, Result};
-use crate::index::{fold_name, IndexSnapshot};
+use crate::index::{fold_into, fold_name};
 use crate::model::{EntryType, QueryOptions, QueryResult, SlotId, SortBy};
+use crate::store::Store;
 
-use super::parser::{Expr, Field, FilterSpec, KindFilter, MatchMode, Term};
 use super::filters::{Cmp, DateField, DateFilter, SizeFilter};
+use super::parser::{Expr, Field, FilterSpec, KindFilter, MatchMode, Term};
 
 pub type Matcher = Box<dyn Fn(&Ctx<'_>) -> bool + Send + Sync>;
 
 pub struct Ctx<'a> {
-    pub snap: &'a IndexSnapshot,
+    pub store: &'a Store,
     pub slot: SlotId,
-    pub paths: Option<&'a [(Vec<u8>, Vec<u8>)]>,
+    /// (original, folded) path bytes, filled only for path queries.
+    pub path: Option<(&'a [u8], &'a [u8])>,
 }
 
 fn target<'a>(field: Field, c: &Ctx<'a>) -> &'a [u8] {
     match field {
-        Field::Name => c.snap.name(c.slot),
-        Field::Path => c
-            .paths
-            .and_then(|p| p.get(c.slot as usize))
-            .map(|v| v.0.as_slice())
-            .unwrap_or_default(),
+        Field::Name => c.store.name(c.slot),
+        Field::Path => c.path.map(|p| p.0).unwrap_or_default(),
     }
 }
 
 fn folded_target<'a>(field: Field, c: &Ctx<'a>) -> &'a [u8] {
     match field {
-        Field::Name => c.snap.folded(c.slot),
-        Field::Path => c
-            .paths
-            .and_then(|p| p.get(c.slot as usize))
-            .map(|v| v.1.as_slice())
-            .unwrap_or_default(),
+        Field::Name => c.store.folded(c.slot),
+        Field::Path => c.path.map(|p| p.1).unwrap_or_default(),
     }
 }
 
@@ -90,9 +86,15 @@ fn byte_match(t: &Term, c: &Ctx<'_>, needle_fold: &[u8]) -> bool {
         return true;
     }
     match t.mode {
-        MatchMode::Contains => find_all(hay, needle)
-            .into_iter()
-            .any(|(s, e)| !t.whole_word || whole_word_ok(hay, s, e)),
+        MatchMode::Contains => {
+            if !t.whole_word {
+                memchr::memmem::find(hay, needle).is_some()
+            } else {
+                find_all(hay, needle)
+                    .into_iter()
+                    .any(|(s, e)| whole_word_ok(hay, s, e))
+            }
+        }
         MatchMode::StartsWith => {
             hay.starts_with(needle) && (!t.whole_word || whole_word_ok(hay, 0, needle.len()))
         }
@@ -103,6 +105,62 @@ fn byte_match(t: &Term, c: &Ctx<'_>, needle_fold: &[u8]) -> bool {
         MatchMode::Exact => hay == needle,
         _ => false,
     }
+}
+
+fn wildcard_match(pat: &[u8], hay: &[u8]) -> bool {
+    if let Some(v) = wildcard_simple(pat, hay) {
+        return v;
+    }
+    let (mut p, mut h) = (0usize, 0usize);
+    let mut star: Option<usize> = None;
+    let mut mark = 0usize;
+    while h < hay.len() {
+        if p < pat.len() && (pat[p] == b'?' || pat[p] == hay[h]) {
+            p += 1;
+            h += 1;
+        } else if p < pat.len() && pat[p] == b'*' {
+            star = Some(p);
+            p += 1;
+            mark = h;
+        } else if let Some(sp) = star {
+            p = sp + 1;
+            mark += 1;
+            h = mark;
+        } else {
+            return false;
+        }
+    }
+    while p < pat.len() && pat[p] == b'*' {
+        p += 1;
+    }
+    p == pat.len()
+}
+
+fn wildcard_simple(pat: &[u8], hay: &[u8]) -> Option<bool> {
+    if pat == b"*" {
+        return Some(true);
+    }
+    let literal = !pat.iter().any(|&b| b == b'*' || b == b'?');
+    if literal {
+        return Some(hay == pat);
+    }
+    if let Some(rest) = pat.strip_prefix(b"*") {
+        if !rest.iter().any(|&b| b == b'*' || b == b'?') {
+            return Some(hay.ends_with(rest));
+        }
+    }
+    if let Some(rest) = pat.strip_suffix(b"*") {
+        if !rest.iter().any(|&b| b == b'*' || b == b'?') {
+            return Some(hay.starts_with(rest));
+        }
+    }
+    if pat.len() > 2 && pat[0] == b'*' && pat[pat.len() - 1] == b'*' {
+        let mid = &pat[1..pat.len() - 1];
+        if !mid.iter().any(|&b| b == b'*' || b == b'?') {
+            return Some(memchr::memmem::find(hay, mid).is_some());
+        }
+    }
+    None
 }
 
 fn wildcard_to_regex(s: &str) -> String {
@@ -143,10 +201,10 @@ fn compile_filter(kind: KindFilter, filter: &FilterSpec) -> Result<Matcher> {
         FilterSpec::Size(sf) => {
             let sf = *sf;
             Ok(Box::new(move |c: &Ctx<'_>| {
-                if !kind_ok(kind, c.snap.kind(c.slot)) {
+                if !kind_ok(kind, c.store.kind(c.slot)) {
                     return false;
                 }
-                let size = c.snap.entry(c.slot).size;
+                let size = c.store.entry(c.slot).map(|e| e.size).unwrap_or(0);
                 match sf {
                     SizeFilter::Compare(cmp, v) => cmp_u(cmp, size, v),
                     SizeFilter::Range(a, b) => size >= a && size <= b,
@@ -157,14 +215,15 @@ fn compile_filter(kind: KindFilter, filter: &FilterSpec) -> Result<Matcher> {
             let field = *field;
             let df = *df;
             Ok(Box::new(move |c: &Ctx<'_>| {
-                if !kind_ok(kind, c.snap.kind(c.slot)) {
+                if !kind_ok(kind, c.store.kind(c.slot)) {
                     return false;
                 }
-                let e = c.snap.entry(c.slot);
-                let t = match field {
-                    DateField::Created => e.created,
-                    DateField::Modified => e.mtime,
-                    DateField::Accessed => e.accessed,
+                let e = c.store.entry(c.slot);
+                let t = match (field, e) {
+                    (DateField::Created, Some(e)) => e.created as i64,
+                    (DateField::Modified, Some(e)) => e.mtime,
+                    (DateField::Accessed, Some(e)) => e.accessed as i64,
+                    (_, None) => 0,
                 };
                 match df {
                     DateFilter::Compare(cmp, v) => cmp_i(cmp, t, v),
@@ -176,10 +235,10 @@ fn compile_filter(kind: KindFilter, filter: &FilterSpec) -> Result<Matcher> {
         FilterSpec::Ext(exts) => {
             let exts = exts.clone();
             Ok(Box::new(move |c: &Ctx<'_>| {
-                if !kind_ok(kind, c.snap.kind(c.slot)) {
+                if !kind_ok(kind, c.store.kind(c.slot)) {
                     return false;
                 }
-                let name = c.snap.name(c.slot);
+                let name = c.store.name(c.slot);
                 let ext = name
                     .iter()
                     .rposition(|&b| b == b'.')
@@ -202,8 +261,27 @@ fn compile_term(t: &Term) -> Result<Matcher> {
     let case_sensitive = t.case_sensitive;
 
     let needle_fold = fold_name(t.text.as_bytes());
+    let finder: Option<Finder<'static>> = if t.mode == MatchMode::Contains && !whole_word {
+        let needle: &[u8] = if case_sensitive {
+            t.text.as_bytes()
+        } else {
+            &needle_fold
+        };
+        Some(Finder::new(needle).into_owned())
+    } else {
+        None
+    };
+    let wildcard_pat = if t.mode == MatchMode::Wildcard && !whole_word {
+        Some(if case_sensitive {
+            t.text.as_bytes().to_vec()
+        } else {
+            fold_name(t.text.as_bytes())
+        })
+    } else {
+        None
+    };
     let pattern = match t.mode {
-        MatchMode::Regex | MatchMode::Wildcard => {
+        MatchMode::Regex | MatchMode::Wildcard if wildcard_pat.is_none() => {
             let src = if t.mode == MatchMode::Wildcard {
                 wildcard_to_regex(&t.text)
             } else {
@@ -220,8 +298,24 @@ fn compile_term(t: &Term) -> Result<Matcher> {
     };
 
     Ok(Box::new(move |c: &Ctx<'_>| {
-        if !kind_ok(kind, c.snap.kind(c.slot)) {
+        if !kind_ok(kind, c.store.kind(c.slot)) {
             return false;
+        }
+        if let Some(pat) = &wildcard_pat {
+            let hay = if case_sensitive {
+                target(field, c)
+            } else {
+                folded_target(field, c)
+            };
+            return wildcard_match(pat, hay);
+        }
+        if let Some(f) = &finder {
+            let hay = if case_sensitive {
+                target(field, c)
+            } else {
+                folded_target(field, c)
+            };
+            return f.find(hay).is_some();
         }
         if let Some(re) = &pattern {
             let s = String::from_utf8_lossy(target(field, c));
@@ -263,76 +357,99 @@ fn uses_path(e: &Expr) -> bool {
     }
 }
 
-pub fn run(
-    snap: &IndexSnapshot,
-    query: &str,
-    opts: QueryOptions,
-) -> Result<QueryResult> {
+pub fn run(store: &Store, generation: u64, query: &str, opts: QueryOptions) -> Result<QueryResult> {
     let start = std::time::Instant::now();
     let expr = super::parser::parse(query, opts)?;
     let matcher = compile_expr(&expr)?;
+    let n = store.len();
+    let use_path = uses_path(&expr);
 
-    let paths = if uses_path(&expr) {
-        let mut v = vec![(Vec::new(), Vec::new()); snap.entries.len()];
-        let mut buf = Vec::new();
-        for slot in 0..snap.entries.len() {
-            snap.path(slot as SlotId, &mut buf);
-            v[slot].0 = buf.clone();
-            v[slot].1 = fold_name(&buf);
-        }
-        Some(v)
-    } else {
-        None
-    };
+    const CHUNK: usize = 1 << 16;
+    let chunks = n.div_ceil(CHUNK);
+    let partials: Vec<(Vec<SlotId>, usize)> = (0..chunks)
+        .into_par_iter()
+        .map(|ci| {
+            let start = ci * CHUNK;
+            let end = (start + CHUNK).min(n);
+            let mut local = Vec::new();
+            let mut count = 0usize;
+            let mut path_buf = Vec::new();
+            let mut fold_buf = Vec::new();
+            for slot in start..end {
+                let slot = slot as SlotId;
+                if !store.is_live(slot) {
+                    continue;
+                }
+                if use_path {
+                    store.path(slot, &mut path_buf);
+                    fold_into(&path_buf, &mut fold_buf);
+                }
+                let ctx = Ctx {
+                    store,
+                    slot,
+                    path: if use_path {
+                        Some((path_buf.as_slice(), fold_buf.as_slice()))
+                    } else {
+                        None
+                    },
+                };
+                if matcher(&ctx) {
+                    count += 1;
+                    local.push(slot);
+                }
+            }
+            (local, count)
+        })
+        .collect();
 
     let mut slots: Vec<SlotId> = Vec::new();
     let mut total = 0usize;
-    let order: &[u32] = if matches!(opts.sort, SortBy::Name | SortBy::NameDesc) {
-        &snap.by_name
-    } else {
-        &snap.by_name_cs
-    };
-
-    for &slot in order {
-        let ctx = Ctx {
-            snap,
-            slot,
-            paths: paths.as_deref(),
-        };
-        if matcher(&ctx) {
-            total += 1;
-            slots.push(slot);
-        }
+    for (mut v, c) in partials {
+        total += c;
+        slots.append(&mut v);
     }
 
     match opts.sort {
-        SortBy::Name => {}
-        SortBy::NameDesc => slots.reverse(),
+        SortBy::Name => slots.sort_unstable_by(|&a, &b| {
+            store.folded(a).cmp(store.folded(b)).then_with(|| a.cmp(&b))
+        }),
+        SortBy::NameDesc => {
+            slots.sort_unstable_by(|&a, &b| {
+                store.folded(a).cmp(store.folded(b)).then_with(|| a.cmp(&b))
+            });
+            slots.reverse();
+        }
         SortBy::Path | SortBy::PathDesc => {
-            if paths.is_none() {
-                let mut p: Vec<(Vec<u8>, Vec<u8>)> = vec![(Vec::new(), Vec::new()); snap.entries.len()];
-                let mut buf = Vec::new();
-                for slot in 0..snap.entries.len() {
-                    snap.path(slot as SlotId, &mut buf);
-                    p[slot].0 = buf.clone();
-                }
-                slots.sort_by(|&a, &b| p[a as usize].0.cmp(&p[b as usize].0));
-            } else {
-                let p = paths.as_ref().unwrap();
-                slots.sort_by(|&a, &b| p[a as usize].0.cmp(&p[b as usize].0));
-            }
+            let mut buf = Vec::new();
+            let mut keyed: Vec<(Vec<u8>, SlotId)> = slots
+                .iter()
+                .map(|&s| {
+                    store.path(s, &mut buf);
+                    (buf.clone(), s)
+                })
+                .collect();
+            keyed.sort_by(|a, b| a.0.cmp(&b.0));
+            slots = keyed.into_iter().map(|(_, s)| s).collect();
             if matches!(opts.sort, SortBy::PathDesc) {
                 slots.reverse();
             }
         }
         SortBy::Size | SortBy::SizeDesc => {
-            slots.sort_by(|&a, &b| snap.entry(a).size.cmp(&snap.entry(b).size));
+            slots.sort_by(|&a, &b| {
+                let sa = store.entry(a).map(|e| e.size).unwrap_or(0);
+                let sb = store.entry(b).map(|e| e.size).unwrap_or(0);
+                sa.cmp(&sb)
+            });
             if matches!(opts.sort, SortBy::SizeDesc) {
                 slots.reverse();
             }
         }
         SortBy::Mtime | SortBy::MtimeDesc => {
-            slots.sort_by(|&a, &b| snap.entry(a).mtime.cmp(&snap.entry(b).mtime));
+            slots.sort_by(|&a, &b| {
+                let ma = store.entry(a).map(|e| e.mtime).unwrap_or(0);
+                let mb = store.entry(b).map(|e| e.mtime).unwrap_or(0);
+                ma.cmp(&mb)
+            });
             if matches!(opts.sort, SortBy::MtimeDesc) {
                 slots.reverse();
             }
@@ -343,13 +460,12 @@ pub fn run(
     if truncated {
         slots.truncate(opts.limit);
     }
-    let _ = snap;
 
     Ok(QueryResult {
         slots,
         elapsed_ms: start.elapsed().as_secs_f64() * 1000.0,
         total_matched: total,
-        generation: snap.generation,
+        generation,
         truncated,
     })
 }

@@ -29,10 +29,7 @@ fn file_uri(path: &str) -> String {
 }
 
 fn open_target(path: &str) {
-    let _ = gio::AppInfo::launch_default_for_uri(
-        &file_uri(path),
-        None::<&gio::AppLaunchContext>,
-    );
+    let _ = gio::AppInfo::launch_default_for_uri(&file_uri(path), None::<&gio::AppLaunchContext>);
 }
 
 fn command_exists(name: &str) -> bool {
@@ -93,13 +90,12 @@ fn copy_path(path: &str) {
     }
 }
 
-
 struct TrayData {
     app: gtk::Application,
     window: gtk::ApplicationWindow,
     menu: gtk::Menu,
     last_click: Mutex<(u32, f64, f64)>,
-    hold: gio::ApplicationHoldGuard,
+    _hold: gio::ApplicationHoldGuard,
 }
 
 unsafe extern "C" fn on_status_icon_button_press(
@@ -211,9 +207,10 @@ fn present_existing_window() {
     }
 }
 
-
 fn env_set(key: &str) -> bool {
-    std::env::var_os(key).map(|v| !v.is_empty()).unwrap_or(false)
+    std::env::var_os(key)
+        .map(|v| !v.is_empty())
+        .unwrap_or(false)
 }
 
 /// Scan /proc for a running input-method framework (no external tools).
@@ -279,9 +276,7 @@ fn maybe_reexec_for_im() {
     let ctx = gtk::IMMulticontext::new();
     use gtk::prelude::*;
     let id = ctx.context_id().map(|s| s.to_string()).unwrap_or_default();
-    let simple = id.is_empty()
-        || id.contains("simple")
-        || id.contains("none");
+    let simple = id.is_empty() || id.contains("simple") || id.contains("none");
     if !simple {
         return;
     }
@@ -319,6 +314,7 @@ fn main() -> anyhow::Result<()> {
     let app = gtk::Application::builder()
         .application_id("com.local.everything-linux")
         .build();
+    #[allow(deprecated)]
     let (show_tx, show_rx) = glib::MainContext::channel(glib::Priority::DEFAULT);
     spawn_gui_socket_listener(gui_socket.clone(), show_tx);
     {
@@ -362,7 +358,9 @@ fn build_ui(app: &gtk::Application, config: Config) {
 
     let entry = gtk::Entry::new();
     let _ = ENTRY.set(EntryRef(entry.clone()));
-    entry.set_placeholder_text(Some("Search file names...  (e.g. *.rs  size:>1mb  ext:rs|md)"));
+    entry.set_placeholder_text(Some(
+        "Search file names...  (e.g. *.rs  size:>1mb  ext:rs|md)",
+    ));
     entry.set_hexpand(true);
 
     let store = gtk::ListStore::new(&[String::static_type()]);
@@ -389,6 +387,7 @@ fn build_ui(app: &gtk::Application, config: Config) {
     window.add(&vbox);
 
     let (query_tx, query_rx) = std::sync::mpsc::channel::<String>();
+    #[allow(deprecated)]
     let (result_tx, result_rx) = glib::MainContext::channel(glib::Priority::DEFAULT);
 
     let config_worker = config.clone();
@@ -396,7 +395,9 @@ fn build_ui(app: &gtk::Application, config: Config) {
     std::thread::Builder::new()
         .name("gui-query".into())
         .spawn(move || {
-            if let Err(e) = ipc::ensure_daemon(&config_worker, gui_exe.as_deref(), Some(EMBEDDED_DAEMON)) {
+            if let Err(e) =
+                ipc::ensure_daemon(&config_worker, gui_exe.as_deref(), Some(EMBEDDED_DAEMON))
+            {
                 let _ = result_tx.send(ResultMsg {
                     header: None,
                     lines: Vec::new(),
@@ -412,8 +413,16 @@ fn build_ui(app: &gtk::Application, config: Config) {
                     ipc::shutdown_daemon(&config_worker);
                     std::thread::sleep(std::time::Duration::from_millis(400));
                     let _ = std::fs::remove_file(&config_worker.socket_path);
-                    if let Err(e) = ipc::ensure_daemon(&config_worker, gui_exe.as_deref(), Some(EMBEDDED_DAEMON)) {
-                        let _ = result_tx.send(ResultMsg { header: None, lines: Vec::new(), error: Some(e.to_string()) });
+                    if let Err(e) = ipc::ensure_daemon(
+                        &config_worker,
+                        gui_exe.as_deref(),
+                        Some(EMBEDDED_DAEMON),
+                    ) {
+                        let _ = result_tx.send(ResultMsg {
+                            header: None,
+                            lines: Vec::new(),
+                            error: Some(e.to_string()),
+                        });
                         return;
                     }
                     let _ = ipc::set_auto_root(&config_worker, exe);
@@ -564,7 +573,7 @@ fn build_ui(app: &gtk::Application, config: Config) {
         window: window.clone(),
         menu,
         last_click: Mutex::new((0, 0.0, 0.0)),
-        hold,
+        _hold: hold,
     }));
 
     let theme = gtk::IconTheme::default().expect("default icon theme");

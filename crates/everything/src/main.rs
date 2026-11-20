@@ -1,5 +1,3 @@
-use std::path::{Path, PathBuf};
-
 use everything_core::config::Config;
 use everything_core::ipc::{self, Request, WireOptions};
 
@@ -117,7 +115,6 @@ fn main() -> anyhow::Result<()> {
     }
     Ok(())
 }
-
 
 fn print_help() {
     println!("everything - Everything-like file search client for Linux\n");
