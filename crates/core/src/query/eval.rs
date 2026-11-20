@@ -6,6 +6,7 @@ use crate::error::{Error, Result};
 use crate::index::{fold_into, fold_name};
 use crate::model::{EntryType, QueryOptions, QueryResult, SlotId, SortBy};
 use crate::store::Store;
+use crate::view::IndexView;
 
 use super::filters::{Cmp, DateField, DateFilter, SizeFilter};
 use super::parser::{Expr, Field, FilterSpec, KindFilter, MatchMode, Term};
@@ -13,7 +14,7 @@ use super::parser::{Expr, Field, FilterSpec, KindFilter, MatchMode, Term};
 pub type Matcher = Box<dyn Fn(&Ctx<'_>) -> bool + Send + Sync>;
 
 pub struct Ctx<'a> {
-    pub store: &'a Store,
+    pub view: &'a IndexView<'a>,
     pub slot: SlotId,
     /// (original, folded) path bytes, filled only for path queries.
     pub path: Option<(&'a [u8], &'a [u8])>,
@@ -21,14 +22,14 @@ pub struct Ctx<'a> {
 
 fn target<'a>(field: Field, c: &Ctx<'a>) -> &'a [u8] {
     match field {
-        Field::Name => c.store.name(c.slot),
+        Field::Name => c.view.name(c.slot),
         Field::Path => c.path.map(|p| p.0).unwrap_or_default(),
     }
 }
 
 fn folded_target<'a>(field: Field, c: &Ctx<'a>) -> &'a [u8] {
     match field {
-        Field::Name => c.store.folded(c.slot),
+        Field::Name => c.view.folded(c.slot),
         Field::Path => c.path.map(|p| p.1).unwrap_or_default(),
     }
 }
@@ -201,10 +202,10 @@ fn compile_filter(kind: KindFilter, filter: &FilterSpec) -> Result<Matcher> {
         FilterSpec::Size(sf) => {
             let sf = *sf;
             Ok(Box::new(move |c: &Ctx<'_>| {
-                if !kind_ok(kind, c.store.kind(c.slot)) {
+                if !kind_ok(kind, c.view.kind(c.slot)) {
                     return false;
                 }
-                let size = c.store.entry(c.slot).map(|e| e.size).unwrap_or(0);
+                let size = c.view.size(c.slot);
                 match sf {
                     SizeFilter::Compare(cmp, v) => cmp_u(cmp, size, v),
                     SizeFilter::Range(a, b) => size >= a && size <= b,
@@ -215,15 +216,13 @@ fn compile_filter(kind: KindFilter, filter: &FilterSpec) -> Result<Matcher> {
             let field = *field;
             let df = *df;
             Ok(Box::new(move |c: &Ctx<'_>| {
-                if !kind_ok(kind, c.store.kind(c.slot)) {
+                if !kind_ok(kind, c.view.kind(c.slot)) {
                     return false;
                 }
-                let e = c.store.entry(c.slot);
-                let t = match (field, e) {
-                    (DateField::Created, Some(e)) => e.created as i64,
-                    (DateField::Modified, Some(e)) => e.mtime,
-                    (DateField::Accessed, Some(e)) => e.accessed as i64,
-                    (_, None) => 0,
+                let t = match field {
+                    DateField::Created => c.view.created(c.slot),
+                    DateField::Modified => c.view.mtime(c.slot),
+                    DateField::Accessed => c.view.accessed(c.slot),
                 };
                 match df {
                     DateFilter::Compare(cmp, v) => cmp_i(cmp, t, v),
@@ -235,10 +234,10 @@ fn compile_filter(kind: KindFilter, filter: &FilterSpec) -> Result<Matcher> {
         FilterSpec::Ext(exts) => {
             let exts = exts.clone();
             Ok(Box::new(move |c: &Ctx<'_>| {
-                if !kind_ok(kind, c.store.kind(c.slot)) {
+                if !kind_ok(kind, c.view.kind(c.slot)) {
                     return false;
                 }
-                let name = c.store.name(c.slot);
+                let name = c.view.name(c.slot);
                 let ext = name
                     .iter()
                     .rposition(|&b| b == b'.')
@@ -298,7 +297,7 @@ fn compile_term(t: &Term) -> Result<Matcher> {
     };
 
     Ok(Box::new(move |c: &Ctx<'_>| {
-        if !kind_ok(kind, c.store.kind(c.slot)) {
+        if !kind_ok(kind, c.view.kind(c.slot)) {
             return false;
         }
         if let Some(pat) = &wildcard_pat {
@@ -358,10 +357,20 @@ fn uses_path(e: &Expr) -> bool {
 }
 
 pub fn run(store: &Store, generation: u64, query: &str, opts: QueryOptions) -> Result<QueryResult> {
+    let view = IndexView::Store(store);
+    run_view(&view, generation, query, opts)
+}
+
+pub fn run_view<'a>(
+    view: &'a IndexView<'a>,
+    generation: u64,
+    query: &str,
+    opts: QueryOptions,
+) -> Result<QueryResult> {
     let start = std::time::Instant::now();
     let expr = super::parser::parse(query, opts)?;
     let matcher = compile_expr(&expr)?;
-    let n = store.len();
+    let n = view.len();
     let use_path = uses_path(&expr);
 
     const CHUNK: usize = 1 << 16;
@@ -377,15 +386,15 @@ pub fn run(store: &Store, generation: u64, query: &str, opts: QueryOptions) -> R
             let mut fold_buf = Vec::new();
             for slot in start..end {
                 let slot = slot as SlotId;
-                if !store.is_live(slot) {
+                if !view.is_live(slot) {
                     continue;
                 }
                 if use_path {
-                    store.path(slot, &mut path_buf);
+                    view.path(slot, &mut path_buf);
                     fold_into(&path_buf, &mut fold_buf);
                 }
                 let ctx = Ctx {
-                    store,
+                    view,
                     slot,
                     path: if use_path {
                         Some((path_buf.as_slice(), fold_buf.as_slice()))
@@ -414,39 +423,39 @@ pub fn run(store: &Store, generation: u64, query: &str, opts: QueryOptions) -> R
         match opts.sort {
             SortBy::Name => {
                 slots.select_nth_unstable_by(limit, |&a, &b| {
-                    store.folded(a).cmp(store.folded(b)).then_with(|| a.cmp(&b))
+                    view.folded(a).cmp(view.folded(b)).then_with(|| a.cmp(&b))
                 });
             }
             SortBy::NameDesc => {
                 slots.select_nth_unstable_by(limit, |&a, &b| {
-                    store.folded(b).cmp(store.folded(a)).then_with(|| b.cmp(&a))
+                    view.folded(b).cmp(view.folded(a)).then_with(|| b.cmp(&a))
                 });
             }
             SortBy::Size => {
                 slots.select_nth_unstable_by(limit, |&a, &b| {
-                    let sa = store.entry(a).map(|e| e.size).unwrap_or(0);
-                    let sb = store.entry(b).map(|e| e.size).unwrap_or(0);
+                    let sa = view.size(a);
+                    let sb = view.size(b);
                     sa.cmp(&sb)
                 });
             }
             SortBy::SizeDesc => {
                 slots.select_nth_unstable_by(limit, |&a, &b| {
-                    let sa = store.entry(a).map(|e| e.size).unwrap_or(0);
-                    let sb = store.entry(b).map(|e| e.size).unwrap_or(0);
+                    let sa = view.size(a);
+                    let sb = view.size(b);
                     sb.cmp(&sa)
                 });
             }
             SortBy::Mtime => {
                 slots.select_nth_unstable_by(limit, |&a, &b| {
-                    let ma = store.entry(a).map(|e| e.mtime).unwrap_or(0);
-                    let mb = store.entry(b).map(|e| e.mtime).unwrap_or(0);
+                    let ma = view.mtime(a);
+                    let mb = view.mtime(b);
                     ma.cmp(&mb)
                 });
             }
             SortBy::MtimeDesc => {
                 slots.select_nth_unstable_by(limit, |&a, &b| {
-                    let ma = store.entry(a).map(|e| e.mtime).unwrap_or(0);
-                    let mb = store.entry(b).map(|e| e.mtime).unwrap_or(0);
+                    let ma = view.mtime(a);
+                    let mb = view.mtime(b);
                     mb.cmp(&ma)
                 });
             }
@@ -458,12 +467,11 @@ pub fn run(store: &Store, generation: u64, query: &str, opts: QueryOptions) -> R
     }
 
     match opts.sort {
-        SortBy::Name => slots.sort_unstable_by(|&a, &b| {
-            store.folded(a).cmp(store.folded(b)).then_with(|| a.cmp(&b))
-        }),
+        SortBy::Name => slots
+            .sort_unstable_by(|&a, &b| view.folded(a).cmp(view.folded(b)).then_with(|| a.cmp(&b))),
         SortBy::NameDesc => {
             slots.sort_unstable_by(|&a, &b| {
-                store.folded(a).cmp(store.folded(b)).then_with(|| a.cmp(&b))
+                view.folded(a).cmp(view.folded(b)).then_with(|| a.cmp(&b))
             });
             slots.reverse();
         }
@@ -472,7 +480,7 @@ pub fn run(store: &Store, generation: u64, query: &str, opts: QueryOptions) -> R
             let mut keyed: Vec<(Vec<u8>, SlotId)> = slots
                 .iter()
                 .map(|&s| {
-                    store.path(s, &mut buf);
+                    view.path(s, &mut buf);
                     (buf.clone(), s)
                 })
                 .collect();
@@ -484,8 +492,8 @@ pub fn run(store: &Store, generation: u64, query: &str, opts: QueryOptions) -> R
         }
         SortBy::Size | SortBy::SizeDesc => {
             slots.sort_by(|&a, &b| {
-                let sa = store.entry(a).map(|e| e.size).unwrap_or(0);
-                let sb = store.entry(b).map(|e| e.size).unwrap_or(0);
+                let sa = view.size(a);
+                let sb = view.size(b);
                 sa.cmp(&sb)
             });
             if matches!(opts.sort, SortBy::SizeDesc) {
@@ -494,8 +502,8 @@ pub fn run(store: &Store, generation: u64, query: &str, opts: QueryOptions) -> R
         }
         SortBy::Mtime | SortBy::MtimeDesc => {
             slots.sort_by(|&a, &b| {
-                let ma = store.entry(a).map(|e| e.mtime).unwrap_or(0);
-                let mb = store.entry(b).map(|e| e.mtime).unwrap_or(0);
+                let ma = view.mtime(a);
+                let mb = view.mtime(b);
                 ma.cmp(&mb)
             });
             if matches!(opts.sort, SortBy::MtimeDesc) {

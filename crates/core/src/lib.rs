@@ -6,8 +6,10 @@ pub mod ipc;
 pub mod monitor;
 pub mod persist;
 pub mod query;
+pub mod raw;
 pub mod sdk;
 pub mod store;
+pub mod view;
 pub mod walker;
 
 pub use config::Config;

@@ -1,7 +1,12 @@
+use std::path::{Path, PathBuf};
+
 use everything_core::config::Config;
 use everything_core::ipc::{self, Request, WireOptions};
 use everything_core::model::{QueryOptions, SortBy};
+use everything_core::query;
+use everything_core::raw::MappedIndex;
 use everything_core::sdk::LocalEngine;
+use everything_core::view::IndexView;
 
 fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -18,6 +23,7 @@ fn main() -> anyhow::Result<()> {
     let mut cmd_arg: Option<String> = None;
     let mut json = false;
     let mut local = false;
+    let mut raw_path: Option<PathBuf> = None;
 
     let mut i = 0;
     while i < args.len() {
@@ -30,6 +36,13 @@ fn main() -> anyhow::Result<()> {
             "--path" => opts.path = true,
             "--json" => json = true,
             "--local" => local = true,
+            "--raw" => {
+                i += 1;
+                if i >= args.len() {
+                    anyhow::bail!("--raw requires a path");
+                }
+                raw_path = Some(PathBuf::from(&args[i]));
+            }
             "--file" => opts.file_only = true,
             "--folder" => opts.folder_only = true,
             "-s" | "--sort" => {
@@ -78,7 +91,7 @@ fn main() -> anyhow::Result<()> {
     };
 
     if local {
-        return run_local(config, &req, json);
+        return run_local(config, &req, json, raw_path.as_deref());
     }
 
     let (header, lines) = match ipc::client_call(&config.socket_path, &req) {
@@ -142,9 +155,17 @@ fn query_options(req: &Request, max_results: usize) -> QueryOptions {
     }
 }
 
-fn run_local(mut config: Config, req: &Request, json: bool) -> anyhow::Result<()> {
-    config.watch_enabled = false;
+fn run_local(
+    mut config: Config,
+    req: &Request,
+    json: bool,
+    raw_path: Option<&Path>,
+) -> anyhow::Result<()> {
     let max_results = config.max_results;
+    if let Some(path) = raw_path {
+        return run_raw(req, json, max_results, path);
+    }
+    config.watch_enabled = false;
     let roots = config.roots.clone();
     let engine = LocalEngine::open(config, true)?;
     match req.cmd.as_str() {
@@ -215,6 +236,71 @@ fn run_local(mut config: Config, req: &Request, json: bool) -> anyhow::Result<()
     Ok(())
 }
 
+fn run_raw(req: &Request, json: bool, max_results: usize, path: &Path) -> anyhow::Result<()> {
+    let mapped = MappedIndex::open(path)?;
+    let view = IndexView::Raw(&mapped);
+    match req.cmd.as_str() {
+        "query" => {
+            let options = query_options(req, max_results);
+            let result = query::run_view(&view, mapped.generation(), &req.text, options)?;
+            let mut lines = Vec::with_capacity(result.slots.len());
+            let mut buf = Vec::new();
+            for &slot in &result.slots {
+                mapped.path(slot, &mut buf);
+                lines.push(String::from_utf8_lossy(&buf).into_owned());
+            }
+            if json {
+                let obj = serde_json::json!({
+                    "count": lines.len(),
+                    "total": result.total_matched,
+                    "elapsed_ms": result.elapsed_ms,
+                    "generation": mapped.generation(),
+                    "truncated": result.truncated,
+                    "results": lines,
+                });
+                println!("{obj}");
+            } else {
+                for line in &lines {
+                    println!("{line}");
+                }
+            }
+            eprintln!(
+                "# {} results ({} total), {:.2} ms, generation {}",
+                lines.len(),
+                result.total_matched,
+                result.elapsed_ms,
+                mapped.generation()
+            );
+            if result.truncated {
+                eprintln!("# truncated: use --limit 0 for all results");
+            }
+        }
+        "status" => {
+            let mut lines = vec![
+                format!("files={}", mapped.file_count()),
+                format!("dirs={}", mapped.dir_count()),
+                format!("generation={}", mapped.generation()),
+                "watches=0".to_string(),
+                "full_rebuilds=0".to_string(),
+                "incremental_updates=0".to_string(),
+            ];
+            for root in mapped.roots() {
+                lines.push(format!("root={}", root.path.display()));
+            }
+            for line in &lines {
+                println!("{line}");
+            }
+            eprintln!(
+                "# {} results (0 total), 0.00 ms, generation {}",
+                lines.len(),
+                mapped.generation()
+            );
+        }
+        other => anyhow::bail!("raw snapshot mode does not support command: {other}"),
+    }
+    Ok(())
+}
+
 fn print_help() {
     println!("everything - Everything-like file search client for Linux\n");
     println!("Usage: everything [OPTIONS] [QUERY...]\n");
@@ -235,6 +321,7 @@ fn print_help() {
     println!("  -l, --limit <N>        max results (0 = all)");
     println!("      --json             JSON output");
     println!("      --local            run the index in this process (no daemon/IPC)");
+    println!("      --raw <PATH>       with --local: query a raw mmap snapshot");
     println!("  -h, --help             show this help\n");
     println!("Query syntax:");
     println!("  space = AND, | = OR, ! = NOT, parentheses supported");

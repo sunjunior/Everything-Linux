@@ -353,7 +353,12 @@ fn main() -> anyhow::Result<()> {
                 match local_ui.get().cloned() {
                     Some(engine) => {
                         std::thread::spawn(move || {
-                            let _ = engine.set_auto_root(std::path::Path::new(&exe));
+                            if engine
+                                .set_auto_root(std::path::Path::new(&exe))
+                                .unwrap_or(false)
+                            {
+                                let _ = engine.save_config();
+                            }
                         });
                     }
                     None => {
@@ -475,7 +480,12 @@ fn build_ui(
             };
             let _ = local_worker.set(engine.clone());
             if let Some(root_exe) = pending_worker.lock().unwrap().take() {
-                let _ = engine.set_auto_root(std::path::Path::new(&root_exe));
+                if engine
+                    .set_auto_root(std::path::Path::new(&root_exe))
+                    .unwrap_or(false)
+                {
+                    let _ = engine.save_config();
+                }
             }
             while let Ok(mut text) = query_rx.recv() {
                 std::thread::sleep(std::time::Duration::from_millis(80));

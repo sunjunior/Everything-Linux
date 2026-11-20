@@ -110,12 +110,11 @@ impl LocalEngine {
     }
 
     pub fn set_auto_root(&self, frontend: &Path) -> Result<bool> {
-        let mut engine = self.engine.lock();
-        let changed = engine.set_auto_root(frontend)?;
-        if changed {
-            let _ = engine.config.save();
-        }
-        Ok(changed)
+        self.engine.lock().set_auto_root(frontend)
+    }
+
+    pub fn save_config(&self) -> Result<()> {
+        self.engine.lock().config.save()
     }
 
     pub fn shutdown(&mut self) {
