@@ -32,7 +32,9 @@ cargo build "${CARGO_FLAGS[@]}" --release -p everything-gtk
 cp target/release/everything-gtk dist/everything-gtk
 
 echo "[4/4] verify"
-file dist/everything dist/everythingd dist/everything-gtk
+if command -v file >/dev/null 2>&1; then
+  file dist/everything dist/everythingd dist/everything-gtk
+fi
 ls -lh dist/
 
 cat <<'NOTE'
