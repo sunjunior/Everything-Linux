@@ -84,8 +84,12 @@ CI 中 `CARGO_FLAGS="--locked" ./build-static.sh` 会安装 GTK3 开发库后构
 | 文件 | 说明 |
 |---|---|
 | `everything` | CLI 客户端，static-pie，1.8 MB |
-| `everythingd` | 守护进程，static-pie，4.7 MB |
-| `everything-gtk` | GTK3 GUI，内嵌守护进程，单文件分发约 5.5 MB |
+| `everythingd` | 守护进程，static-pie，4.6 MB |
+| `everything-gtk` | GTK3 GUI，内嵌守护进程，单文件分发约 5.4 MB |
+
+## 发布与变更记录
+
+每个版本的功能、修复与升级说明见 [CHANGELOG.md](CHANGELOG.md)。发布 tag 前先在该文件增加与 tag 同名的小节（例如 `## [v0.2beta] - 2026-11-20`）；CI 会提取该小节并追加构建产物与 SHA256，作为 GitHub Release 说明。
 
 ## 部署与运行依赖
 

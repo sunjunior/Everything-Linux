@@ -48,16 +48,38 @@ jobs:
             dist/everything-gtk
             everything-linux-x86_64.tar.gz
 
+      - name: Prepare release notes
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          awk -v tag="$tag" '
+            index($0, "## [" tag "]") == 1 {found=1; next}
+            found && /^## \[/ {exit}
+            found {print}
+          ' CHANGELOG.md > release-notes.md
+
+          if ! grep -q '[^[:space:]]' release-notes.md; then
+            {
+              echo "## 变更"
+              echo
+              git log --oneline -20
+            } > release-notes.md
+          fi
+
+          {
+            echo
+            echo "## 构建产物"
+            echo
+            echo "- \`everything\`：静态 CLI（static-pie）"
+            echo "- \`everythingd\`：静态守护进程（static-pie）"
+            echo "- \`everything-gtk\`：GTK3 GUI，已内嵌守护进程，单文件分发"
+            echo
+            echo "SHA256: \`${ARTIFACT_SHA256}\`"
+          } >> release-notes.md
+
       - name: Publish release on version tag
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
           files: everything-linux-x86_64.tar.gz
-          body: |
-            Everything-Linux x86-64 构建产物
-
-            - `everything`：静态 CLI（static-pie）
-            - `everythingd`：静态守护进程（static-pie）
-            - `everything-gtk`：GTK3 GUI，已内嵌守护进程，单文件分发
-
-            SHA256: `${{ env.ARTIFACT_SHA256 }}`
+          body_path: release-notes.md
