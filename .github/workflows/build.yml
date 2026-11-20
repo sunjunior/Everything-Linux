@@ -13,6 +13,7 @@ permissions:
 
 jobs:
   build:
+    if: ${{ !endsWith(github.ref_name, '-fused') }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4

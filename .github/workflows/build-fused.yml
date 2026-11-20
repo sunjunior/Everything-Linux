@@ -1,0 +1,170 @@
+name: Release fused single-file GUI
+
+on:
+  push:
+    tags: ['v*-fused']
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  x86_64:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install GTK3 build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libgtk-3-dev libglib2.0-dev libpango1.0-dev libcairo2-dev
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Test
+        run: cargo test --locked
+
+      - name: Build fused GUI
+        run: cargo build --release --locked -p everything-gtk
+
+      - name: Package
+        run: |
+          mkdir -p package
+          cp target/release/everything-gtk package/
+          tar -czf everything-linux-x86_64.tar.gz -C package everything-gtk
+          file package/everything-gtk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: asset-x86_64
+          path: everything-linux-x86_64.tar.gz
+
+  aarch64:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install GTK3 build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libgtk-3-dev libglib2.0-dev libpango1.0-dev libcairo2-dev
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build fused GUI
+        run: cargo build --release --locked -p everything-gtk
+
+      - name: Package
+        run: |
+          mkdir -p package
+          cp target/release/everything-gtk package/
+          tar -czf everything-linux-aarch64.tar.gz -C package everything-gtk
+          file package/everything-gtk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: asset-aarch64
+          path: everything-linux-aarch64.tar.gz
+
+  armv7:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm
+
+      - name: Build fused GUI in armv7 container
+        run: |
+          docker run --rm --platform linux/arm/v7 \
+            -v "$PWD:/work" -w /work \
+            arm32v7/debian:bookworm-slim \
+            bash -lc '
+              set -eux
+              apt-get update
+              DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+                build-essential pkg-config libgtk-3-dev libglib2.0-dev libpango1.0-dev libcairo2-dev \
+                ca-certificates curl git file
+              curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+              . "$HOME/.cargo/env"
+              cargo build --release --locked -p everything-gtk
+            '
+
+      - name: Package
+        run: |
+          mkdir -p package
+          cp target/release/everything-gtk package/
+          tar -czf everything-linux-armv7.tar.gz -C package everything-gtk
+          file package/everything-gtk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: asset-armv7
+          path: everything-linux-armv7.tar.gz
+
+  release:
+    needs: [x86_64, aarch64, armv7]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download assets
+        uses: actions/download-artifact@v4
+        with:
+          path: assets
+          merge-multiple: true
+
+      - name: Prepare release notes
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          awk -v tag="$tag" '
+            index($0, "## [" tag "]") == 1 {found=1; next}
+            found && /^## \[/ {exit}
+            found {print}
+          ' CHANGELOG.md > release-notes.md
+
+          if ! grep -q '[^[:space:]]' release-notes.md; then
+            printf '## 变更\n\n%s\n' "$(git log --oneline -20)" > release-notes.md
+          fi
+
+          {
+            echo
+            echo "## 构建产物"
+            echo
+            echo "| 架构 | 资产 | SHA256 |"
+            echo "|---|---|---|"
+            for a in assets/everything-linux-*.tar.gz; do
+              name=$(basename "$a")
+              sha=$(sha256sum "$a" | awk '{print $1}')
+              case "$name" in
+                *x86_64*) arch=x86_64 ;;
+                *aarch64*) arch=aarch64 ;;
+                *armv7*) arch=armv7 ;;
+              esac
+              echo "| $arch | \`$name\` | \`$sha\` |"
+            done
+            echo
+            echo "每个压缩包只含一个 \`everything-gtk\`，解压后直接运行。"
+            echo
+            echo "运行要求：Linux + GTK3 运行库；不需要 daemon、CLI 或 Unix socket。"
+            echo
+            echo "Windows 暂不提供，需单独移植文件监听、路径编码、单实例与 GTK3 运行时。"
+          } >> release-notes.md
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: "Everything-Linux v0.3beta-fused（单文件 GUI）"
+          body_path: release-notes.md
+          files: assets/everything-linux-*.tar.gz
+          generate_release_notes: false

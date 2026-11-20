@@ -9,9 +9,32 @@
 - 实验分支：新增进程内 `LocalEngine` SDK 与 `everything --local`；GUI 可在同进程内运行索引，省去 IPC。
 - 融合版 GUI 改为 slot 惰性渲染 + Top-N 截断，宽结果查询约快 30%，全路径约快 13–15%。
 
+## [v0.3beta-fused] - 2026-11-20
+
+单文件融合 GUI 版本，只发布 Linux x86_64 / aarch64 / armv7。
+
 ### 新增与改进
 
-- CI 新增 Linux armv7 与 aarch64 构建，产物可附加到指定 Release。
+- GUI 改为进程内 `LocalEngine`：不再启动或内嵌 `everythingd`，无 IPC、无 Unix socket 查询链路；一个 `everything-gtk` 即完整索引器 + 界面。
+- 单文件体积从 5.5 MB 降到 3.6 MB，运行时只保留一个进程；实测 RSS 186.3 MB、PSS 125.7 MB（旧 daemon + GUI: 190.7 / 138.3 MB）。
+- 结果列表改为 slot + 惰性路径渲染，查询走 Top-N；`*.rs` 查询从 14.8 ms 降到 8.9 ms，全路径从 58.9 ms 降到 51.1 ms。
+- 换根改为后台建新索引、原子切换；实测 94 万文件重建 2.4 s，期间查询 P95 16.4 ms，GUI 旧结果行按 generation 自动失效并重跑当前查询。
+- 新增 raw mmap 快照原型与 CLI `--local --raw`，用于无 daemon 的毫秒级启动实验；尚未接入正式保存流程。
+- `LocalEngine::set_auto_root` 不再写全局配置，避免测试/基准污染用户配置。
+
+### 发布
+
+- Linux x86_64：`everything-linux-x86_64.tar.gz`
+- Linux aarch64：`everything-linux-aarch64.tar.gz`
+- Linux armv7：`everything-linux-armv7.tar.gz`
+- 每个包只含一个 `everything-gtk`，需要 GTK3 运行库；不含 CLI / daemon。
+- Windows 版本暂不提供，需单独移植文件监听、路径编码、单实例与 GTK3 运行时。
+
+### 已知限制
+
+- 换根期间新旧索引同时存在，内存约翻倍。
+- raw 快照当前只能由示例 `write_raw` 从 zstd 快照生成，CLI 需显式 `--raw`。
+- 融合 CLI 未完全取代 daemon 热查询；本轮发布不含 CLI。
 
 ## [v0.2.1beta] - 2026-11-20
 

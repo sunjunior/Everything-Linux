@@ -20,10 +20,11 @@ Everything 在 Windows 上的极速来自两个系统事实：直接解析 NTFS 
 - 属性过滤：`size:`、`dm:`、`dc:`、`da:`、`ext:`
 - 实时增量：创建/删除/重命名/修改/目录子树，inotify 溢出自动全量重建
 - 持久化：zstd 快照，原子替换，配置/数据走 XDG 标准路径
-- 前后端分离：守护进程 + CLI + GTK3 GUI，通过 Unix socket IPC 通信
+- 融合 GUI：索引、查询、inotify 全在 `everything-gtk` 进程内，无 daemon、无 IPC、无 Unix socket
+- 可选前后端分离：CLI + `everythingd` 仍保留，便于脚本、调试和旧用法
 - GUI：Everything 风格橙色放大镜图标（窗口 + 托盘）、任务栏图标（关闭窗口隐藏到托盘、双击恢复、右键退出）、单实例（重复启动自动唤起已有窗口）
 - 结果右键菜单：`打开`、`打开路径`（打开父目录并选中该项）、`复制完整路径和文件名`
-- 单文件分发：GUI 内嵌守护进程，拷贝一个文件即可使用
+- 单文件分发：发布包只含一个约 3.6 MB 的 `everything-gtk`，需要系统 GTK3
 
 ## 界面预览
 
@@ -42,52 +43,47 @@ Everything 在 Windows 上的极速来自两个系统事实：直接解析 NTFS 
 [monitor inotify] ─┘              ▲                              │
        ▲                          │ 增量修改                      │
        │ 事件合并/溢出兜底          └──────────────────────────────┘
-       │
-[zstd 快照（脏时流式落盘）] ←──── [CLI / GTK GUI / Unix socket IPC]
+
+融合 GUI： [GTK3] ─→ [LocalEngine] ─→ 同进程索引 / 查询 / tick
+可选 CLI： [everything] ─→ Unix socket ─→ [everythingd]
 ```
 
 工程结构：
 
 ```
 crates/
-  everything_core/   纯引擎库（model/store/index/walker/query/monitor/persist/ipc/engine/config）
-  everythingd/       守护进程：索引 + inotify + IPC server
-  everything/        CLI 客户端
-  everything-gtk/    GTK3 GUI（build.rs 内嵌 everythingd）
-docs/                BENCHMARKS / INOTIFY_DESIGN / GUI_AND_BUILD / DEPENDENCIES
+  everything_core/   纯引擎库（model/store/index/walker/query/monitor/persist/ipc/engine/config/sdk/raw）
+  everythingd/       可选守护进程：索引 + inotify + IPC server
+  everything/       可选 CLI 客户端
+  everything-gtk/    融合 GTK3 GUI；索引在进程内，build.rs 不再内嵌 daemon
+docs/                BENCHMARKS / INPROCESS_BENCH / INOTIFY_DESIGN / GUI_AND_BUILD / DEPENDENCIES
 scripts/check-deps.sh  目标机依赖自检
-build-static.sh      静态/分发构建
+build-static.sh      CLI/daemon 静态构建（融合 GUI 发布不走此脚本）
 ```
 
-关键设计：只有一份紧凑索引。每条 `Entry` 固定 48 字节，名字（及必要的折叠名）存于连续字节池，父目录用 `first_child`/`next_sibling` 链访问；inotify 事件直接增量修改索引并递增 generation，查询在 `RwLock` 读锁下按 slot 顺序并行扫描，命中结果再按需排序。快照仅在索引变脏时按 `snapshot_interval_secs` 流式写入 zstd，并对快照/socket 等内部路径做索引与事件排除，避免自我触发。
+关键设计：只有一份紧凑索引。每条 `Entry` 固定 48 字节，名字（及必要的折叠名）存于连续字节池，父目录用 `first_child`/`next_sibling` 链访问；inotify 事件直接增量修改索引并递增 generation。融合 GUI 通过 `LocalEngine` 在进程内持有引擎，查询走 slot + 惰性路径渲染，结果列表只保留可见行所需的轻量字段；换根时后台构建新索引，旧索引继续服务查询，完成后原子切换。
 
 ## 构建
 
-仓库不提交任何构建产物（`target/`、`dist/` 已忽略），由 GitHub Actions 在 `ubuntu-24.04` 上构建并上传 `everything-linux-x86_64.tar.gz`。
-本地构建需要 Rust 1.85+（edition 2024）与 Cargo；离线环境可直接：
+仓库不提交任何构建产物（`target/`、`dist/` 已忽略）。本地构建需要 Rust 1.85+（edition 2024）与 Cargo：
 
 ```bash
 git clone https://github.com/sunjunior/Everything-Linux.git
 cd Everything-Linux
-cargo test --offline          # 测试
-cargo build --offline --release
+cargo test --offline
+cargo build --offline --release -p everything-gtk
+# 产物：target/release/everything-gtk
 ```
 
-生成可分发产物（CLI/daemon 为 static-pie；GUI 内嵌 daemon）：
+融合 GUI 发布由 `.github/workflows/build-fused.yml` 完成：在 `v*-fused` 标签上构建 Linux x86_64 / aarch64 / armv7，每个压缩包只放一个 `everything-gtk`。x86_64 与 aarch64 使用原生 runner，armv7 使用 QEMU 容器；不再构建或内嵌 daemon。
 
-```bash
-./build-static.sh             # 产物在 dist/（默认 --offline；CI 通过 CARGO_FLAGS="--locked" 覆盖）
-```
-
-CI 中 `CARGO_FLAGS="--locked" ./build-static.sh` 会安装 GTK3 开发库后构建 CLI、daemon 与内嵌守护进程的 GUI，并打包上传。
-
-`dist/` 内容：
+`build-static.sh` 仍可用于本地生成 CLI/daemon 静态产物，但融合发布不使用它：
 
 | 文件 | 说明 |
 |---|---|
-| `everything` | CLI 客户端，static-pie，1.8 MB |
-| `everythingd` | 守护进程，static-pie，4.6 MB |
-| `everything-gtk` | GTK3 GUI，内嵌守护进程，单文件分发约 5.4 MB |
+| `dist/everything-gtk` | 融合 GUI，索引在进程内，单文件约 3.6 MB |
+| `dist/everything` | 可选 CLI 客户端，static-pie |
+| `dist/everythingd` | 可选守护进程，static-pie |
 
 ## 发布与变更记录
 
@@ -95,7 +91,7 @@ CI 中 `CARGO_FLAGS="--locked" ./build-static.sh` 会安装 GTK3 开发库后构
 
 ## 部署与运行依赖
 
-**最简方式**：把 `dist/everything-gtk` 单独拷到目标机器，双击/直接运行即可。首次运行会把内嵌的守护进程释放到 `~/.cache/everything-linux/`，并以 GUI 所在目录作为默认索引根；把 GUI 移到新目录后再启动会自动切换索引根。
+**最简方式**：把 `dist/everything-gtk` 单独拷到目标机器，双击/直接运行即可。索引、查询和 inotify 都在这个进程内完成，不需要 daemon、CLI 或 socket 文件；GUI 所在目录是默认索引根，移到新目录后再启动会自动后台换根。
 
 - CLI/daemon 为静态链接：不依赖目标机 glibc 版本、GTK、X11；只需 x86-64 + Linux 内核 ≥ 4.4。
 - GUI 动态依赖系统 **GTK3**（`libgtk-3.so.0`、`libglib-2.0.so.0` 等）；动态符号含 `GLIBC_2.39`，建议 glibc ≥ 2.39；需 X11/Wayland 图形会话和图标主题（任务栏图标）。
@@ -120,10 +116,11 @@ max_results = 100000
 ## 使用
 
 ```bash
-# 启动守护（默认索引当前工作目录，或用 --root 指定）
-./dist/everythingd --root ~/Documents
+# 融合 GUI（推荐；单进程，无需先启动 daemon）
+./dist/everything-gtk
 
-# CLI 查询
+# 可选：独立守护 + CLI 查询（默认索引当前工作目录，或用 --root 指定）
+./dist/everythingd --root ~/Documents
 ./dist/everything report.pdf
 ./dist/everything '*.rs'
 ./dist/everything -e '^test_[0-9]+'
@@ -142,8 +139,6 @@ max_results = 100000
 ./dist/everything reindex
 ./dist/everything shutdown
 
-# GUI
-./dist/everything-gtk
 ```
 
 GUI 行为：关闭窗口隐藏到任务栏，双击托盘图标恢复，右键托盘图标退出；重复启动会自动唤起已有窗口；结果右键可打开、打开所在目录或复制完整路径。
@@ -154,20 +149,24 @@ GUI 行为：关闭窗口隐藏到任务栏，双击托盘图标恢复，右键�
 
 | 指标 | 结果 |
 |---|---:|
-| 守护进程 RSS | 112–114 MB（峰值 118–123 MB） |
+| 单进程 GUI RSS / PSS | 186 MB / 126 MB |
+| GUI 可执行文件 | 3.6 MB |
 | 快照大小 | 25 MB |
-| 冷索引 | 2.7 s |
-| 重启到可查询 | 0.9 s |
-| 子串查询 | 8–12 ms |
-| 通配符查询 | 14 ms |
-| 全路径查询 | 60–65 ms |
-| 按大小排序 | 11 ms |
+| 冷索引 | 2.4–2.7 s |
+| 换根后台重建（不阻塞查询） | 2.4 s，查询 P95 16.4 ms |
+| 子串 `*.rs` | 8.9 ms（GUI 状态栏 10.6 ms） |
+| 全路径 `path:` | 51 ms |
+| 按大小排序 | 7.5 ms |
 
-与 Windows Everything 1.4 官方数据（100 万文件约 100 MB 内存、45 MB 磁盘、约 1 分钟索引）处于同一内存级别，磁盘占用约为其一半。详见 [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md)。
+与 Windows Everything 1.4 官方数据（100 万文件约 100 MB 内存、45 MB 磁盘、约 1 分钟索引）处于同一内存级别。融合后省掉了 daemon 进程和 IPC，单进程比旧 daemon + GUI 的 RSS / PSS 分别低约 4 MB / 13 MB。详见 [`docs/INPROCESS_BENCH.md`](docs/INPROCESS_BENCH.md)。
 
 ## 限制
 
-未实现：文件内容搜索、HTTP/ETP 接口、重复文件检测、`root:`/`empty:` 特殊函数、变音符号折叠、EFU 文件列表索引。GUI 在无系统托盘宿主的桌面环境中图标可能不可见（搜索功能不受影响）。
+- Windows：当前只支持 Linux；Windows 需要单独移植 inotify/文件监听、路径编码、单实例与 GTK3 运行时。
+- 本轮发布只含 GUI，不提供 CLI/daemon；CLI 热查询仍走可选 socket 模式。
+- raw mmap 快照仍是原型，正式保存仍使用 zstd 快照。
+- 换根期间新旧索引同时存在，内存约翻倍。
+- 未实现：文件内容搜索、HTTP/ETP 接口、重复文件检测、`root:`/`empty:` 特殊函数、变音符号折叠、EFU 文件列表索引。GUI 在无系统托盘宿主的桌面环境中图标可能不可见（搜索功能不受影响）。
 
 ## 许可
 
