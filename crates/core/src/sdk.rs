@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -22,6 +22,7 @@ pub struct LocalEngine {
     engine: Arc<RwLock<Arc<Mutex<Engine>>>>,
     running: Arc<AtomicBool>,
     rebuilding: Arc<AtomicBool>,
+    root_generation: AtomicU64,
     ticker: Option<JoinHandle<()>>,
 }
 
@@ -56,6 +57,7 @@ impl LocalEngine {
             engine,
             running,
             rebuilding,
+            root_generation: AtomicU64::new(1),
             ticker,
         })
     }
@@ -66,6 +68,13 @@ impl LocalEngine {
 
     pub fn generation(&self) -> u64 {
         self.current().lock().stats().2
+    }
+
+    /// Changes only when the whole engine is replaced (root switch), not on
+    /// ordinary inotify increments. GUI rows use this to detect stale slots
+    /// without invalidating the list on every filesystem event.
+    pub fn root_generation(&self) -> u64 {
+        self.root_generation.load(Ordering::SeqCst)
     }
 
     pub fn search_slots(&self, q: &str, opts: QueryOptions) -> Result<QueryResult> {
@@ -155,6 +164,7 @@ impl LocalEngine {
             new_engine.start_monitor()?;
             let new_engine = Arc::new(Mutex::new(new_engine));
             *self.engine.write() = new_engine;
+            self.root_generation.fetch_add(1, Ordering::SeqCst);
             Ok(true)
         })();
 

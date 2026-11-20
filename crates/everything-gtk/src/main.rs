@@ -1,3 +1,4 @@
+use std::cell::Cell;
 use std::io::{Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
@@ -146,6 +147,7 @@ unsafe extern "C" fn on_status_icon_button_press(
 struct ResultMsg {
     header: Option<Header>,
     slots: Vec<u32>,
+    root_generation: u64,
     error: Option<String>,
 }
 
@@ -428,8 +430,10 @@ fn build_ui(
             &renderer,
             Some(Box::new(move |_col, cell, model, iter| {
                 let slot: u32 = model.value(iter, 0).get().unwrap_or(u32::MAX);
+                let row_epoch: u64 = model.value(iter, 1).get().unwrap_or(0);
                 let text = local_cell
                     .get()
+                    .filter(|engine| engine.root_generation() == row_epoch)
                     .and_then(|engine| engine.path(slot))
                     .map(|path| path.to_string_lossy().into_owned())
                     .unwrap_or_default();
@@ -477,6 +481,7 @@ fn build_ui(
                     let _ = result_tx.send(ResultMsg {
                         header: None,
                         slots: Vec::new(),
+                        root_generation: 0,
                         error: Some(e.to_string()),
                     });
                     return;
@@ -500,7 +505,9 @@ fn build_ui(
                     limit: 5000,
                     ..Default::default()
                 };
-                let msg = match engine.search_slots(&text, options) {
+                let result = engine.search_slots(&text, options);
+                let root_generation = engine.root_generation();
+                let msg = match result {
                     Ok(result) => ResultMsg {
                         header: Some(Header {
                             ok: true,
@@ -512,11 +519,13 @@ fn build_ui(
                             message: String::new(),
                         }),
                         slots: result.slots,
+                        root_generation,
                         error: None,
                     },
                     Err(e) => ResultMsg {
                         header: None,
                         slots: Vec::new(),
+                        root_generation,
                         error: Some(e.to_string()),
                     },
                 };
@@ -530,9 +539,8 @@ fn build_ui(
         let status = status.clone();
         result_rx.attach(None, move |msg: ResultMsg| {
             store.clear();
-            let generation = msg.header.as_ref().map(|h| h.generation).unwrap_or(0);
             for slot in &msg.slots {
-                store.set(&store.append(), &[(0, slot), (1, &generation)]);
+                store.set(&store.append(), &[(0, slot), (1, &msg.root_generation)]);
             }
             let label = match (msg.header, msg.error) {
                 (Some(h), _) if h.ok => format!(
@@ -559,6 +567,31 @@ fn build_ui(
     }
     entry.connect_activate(|_| {});
 
+    // A root switch invalidates all slots. Refresh the current query when the
+    // root epoch changes; ordinary inotify increments leave rows/menu intact.
+    {
+        let local_epoch = local.clone();
+        let tx = query_tx.clone();
+        let last_epoch = Cell::new(0u64);
+        glib::timeout_add_local(std::time::Duration::from_millis(300), move || {
+            if let Some(engine) = local_epoch.get() {
+                let epoch = engine.root_generation();
+                if last_epoch.get() == 0 {
+                    last_epoch.set(epoch);
+                } else if epoch != last_epoch.get() {
+                    last_epoch.set(epoch);
+                    if let Some(last) = LAST_QUERY.get() {
+                        let text = last.lock().unwrap().clone();
+                        if !text.is_empty() {
+                            let _ = tx.send(text);
+                        }
+                    }
+                }
+            }
+            glib::ControlFlow::Continue
+        });
+    }
+
     {
         let model = tree.model().unwrap();
         let local_rows = local.clone();
@@ -568,7 +601,7 @@ fn build_ui(
                 let row_gen: u64 = model.value(&iter, 1).get().unwrap_or(0);
                 if let Some(p) = local_rows
                     .get()
-                    .filter(|engine| engine.generation() == row_gen)
+                    .filter(|engine| engine.root_generation() == row_gen)
                     .and_then(|engine| engine.path(slot))
                 {
                     open_target(&p.to_string_lossy());
@@ -593,7 +626,7 @@ fn build_ui(
                     let row_gen: u64 = model.value(&iter, 1).get().unwrap_or(0);
                     let value = local_menu
                         .get()
-                        .filter(|engine| engine.generation() == row_gen)
+                        .filter(|engine| engine.root_generation() == row_gen)
                         .and_then(|engine| engine.path(slot))
                         .map(|p| p.to_string_lossy().into_owned())
                         .unwrap_or_default();

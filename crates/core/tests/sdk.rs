@@ -56,8 +56,16 @@ fn sdk_searches_and_switches_root_in_process() {
     assert_eq!(hits.result.total_matched, 1);
     assert_eq!(hits.paths, vec![a.join("a-only.txt")]);
     assert_eq!(sdk.status().0, 1);
+    assert_eq!(sdk.root_generation(), 1);
+
+    std::fs::write(a.join("late.txt"), b"x").unwrap();
+    sdk.reindex().unwrap();
+    assert_eq!(sdk.root_generation(), 1, "index updates must not bump root epoch");
 
     assert!(sdk.set_auto_root(&new_exe).unwrap());
+    assert_eq!(sdk.root_generation(), 2);
+    assert!(!sdk.set_auto_root(&new_exe).unwrap());
+    assert_eq!(sdk.root_generation(), 2);
     let hits = sdk.search_paths("b-only", QueryOptions::default()).unwrap();
     assert_eq!(hits.paths, vec![b.join("b-only.txt")]);
     assert_eq!(
