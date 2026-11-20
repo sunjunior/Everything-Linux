@@ -6,6 +6,10 @@
 
 ### 新增与改进
 
+- 实验分支：新增进程内 `LocalEngine` SDK 与 `everything --local`；GUI 可在同进程内运行索引，省去 IPC。
+
+### 新增与改进
+
 - CI 新增 Linux armv7 与 aarch64 构建，产物可附加到指定 Release。
 
 ## [v0.2.1beta] - 2026-11-20

@@ -1,7 +1,7 @@
 use std::io::{Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use gdk_sys::GdkEventButton;
 use glib_sys::{gboolean, gpointer};
@@ -11,9 +11,9 @@ use gtk::prelude::*;
 use gtk_sys::GtkStatusIcon;
 
 use everything_core::config::Config;
-use everything_core::ipc::{self, Header, Request, WireOptions};
-
-const EMBEDDED_DAEMON: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/everythingd"));
+use everything_core::ipc::Header;
+use everything_core::model::QueryOptions;
+use everything_core::sdk::LocalEngine;
 const ICON_16: &[u8] = include_bytes!("../assets/icon-16.png");
 const ICON_24: &[u8] = include_bytes!("../assets/icon-24.png");
 const ICON_32: &[u8] = include_bytes!("../assets/icon-32.png");
@@ -339,23 +339,38 @@ fn main() -> anyhow::Result<()> {
     let app = gtk::Application::builder()
         .application_id("com.local.everything-linux")
         .build();
+    let local: Arc<OnceLock<Arc<LocalEngine>>> = Arc::new(OnceLock::new());
+    let pending_root: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
     #[allow(deprecated)]
     let (show_tx, show_rx) = glib::MainContext::channel(glib::Priority::DEFAULT);
     spawn_gui_socket_listener(gui_socket.clone(), show_tx);
     {
         let cfg = config.clone();
+        let local_ui = local.clone();
+        let pending = pending_root.clone();
         show_rx.attach(None, move |exe: String| {
             if !exe.is_empty() && cfg.auto_root {
-                let _ = ipc::set_auto_root(&cfg, std::path::Path::new(&exe));
+                match local_ui.get().cloned() {
+                    Some(engine) => {
+                        std::thread::spawn(move || {
+                            let _ = engine.set_auto_root(std::path::Path::new(&exe));
+                        });
+                    }
+                    None => {
+                        *pending.lock().unwrap() = Some(exe);
+                    }
+                }
             }
             present_existing_window();
             glib::ControlFlow::Continue
         });
     }
 
+    let local_app = local.clone();
+    let pending_app = pending_root.clone();
     app.connect_activate(move |app| {
         if WINDOW.get().is_none() {
-            build_ui(app, config.clone());
+            build_ui(app, config.clone(), local_app.clone(), pending_app.clone());
         } else {
             present_existing_window();
         }
@@ -365,7 +380,12 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn build_ui(app: &gtk::Application, config: Config) {
+fn build_ui(
+    app: &gtk::Application,
+    config: Config,
+    local: Arc<OnceLock<Arc<LocalEngine>>>,
+    pending_root: Arc<Mutex<Option<String>>>,
+) {
     let hold = app.hold();
     let window = gtk::ApplicationWindow::builder()
         .application(app)
@@ -416,59 +436,57 @@ fn build_ui(app: &gtk::Application, config: Config) {
     let (result_tx, result_rx) = glib::MainContext::channel(glib::Priority::DEFAULT);
 
     let config_worker = config.clone();
-    let gui_exe = std::env::current_exe().ok();
+    let local_worker = local.clone();
+    let pending_worker = pending_root.clone();
     std::thread::Builder::new()
         .name("gui-query".into())
         .spawn(move || {
-            if let Err(e) =
-                ipc::ensure_daemon(&config_worker, gui_exe.as_deref(), Some(EMBEDDED_DAEMON))
-            {
-                let _ = result_tx.send(ResultMsg {
-                    header: None,
-                    lines: Vec::new(),
-                    error: Some(e.to_string()),
-                });
-                return;
+            let mut cfg = config_worker;
+            let exe = std::env::current_exe().ok();
+            let roots_changed = cfg.apply_exe_root(exe.as_deref());
+            if roots_changed {
+                let _ = cfg.save();
             }
-            if let Some(exe) = gui_exe.as_deref() {
-                let adopted = ipc::set_auto_root(&config_worker, exe).unwrap_or(false);
-                if !adopted && config_worker.auto_root {
-                    // Older/foreign daemon: restart it so the new default-root
-                    // behaviour and this binary are in effect.
-                    ipc::shutdown_daemon(&config_worker);
-                    std::thread::sleep(std::time::Duration::from_millis(400));
-                    let _ = std::fs::remove_file(&config_worker.socket_path);
-                    if let Err(e) = ipc::ensure_daemon(
-                        &config_worker,
-                        gui_exe.as_deref(),
-                        Some(EMBEDDED_DAEMON),
-                    ) {
-                        let _ = result_tx.send(ResultMsg {
-                            header: None,
-                            lines: Vec::new(),
-                            error: Some(e.to_string()),
-                        });
-                        return;
-                    }
-                    let _ = ipc::set_auto_root(&config_worker, exe);
+            let engine = match LocalEngine::open(cfg, !roots_changed) {
+                Ok(engine) => Arc::new(engine),
+                Err(e) => {
+                    let _ = result_tx.send(ResultMsg {
+                        header: None,
+                        lines: Vec::new(),
+                        error: Some(e.to_string()),
+                    });
+                    return;
                 }
+            };
+            let _ = local_worker.set(engine.clone());
+            if let Some(root_exe) = pending_worker.lock().unwrap().take() {
+                let _ = engine.set_auto_root(std::path::Path::new(&root_exe));
             }
             while let Ok(mut text) = query_rx.recv() {
                 std::thread::sleep(std::time::Duration::from_millis(80));
                 while let Ok(newer) = query_rx.try_recv() {
                     text = newer;
                 }
-                let mut options = WireOptions::default();
-                options.limit = 5000;
-                let request = Request {
-                    cmd: "query".into(),
-                    text: text.clone(),
-                    options,
+                let options = QueryOptions {
+                    limit: 5000,
+                    ..Default::default()
                 };
-                let msg = match ipc::client_call(&config_worker.socket_path, &request) {
-                    Ok((header, lines)) => ResultMsg {
-                        header: Some(header),
-                        lines,
+                let msg = match engine.search_paths(&text, options) {
+                    Ok(hits) => ResultMsg {
+                        header: Some(Header {
+                            ok: true,
+                            count: hits.paths.len(),
+                            total: hits.result.total_matched,
+                            elapsed_ms: hits.result.elapsed_ms,
+                            generation: hits.result.generation,
+                            truncated: hits.result.truncated,
+                            message: String::new(),
+                        }),
+                        lines: hits
+                            .paths
+                            .iter()
+                            .map(|p| p.to_string_lossy().into_owned())
+                            .collect(),
                         error: None,
                     },
                     Err(e) => ResultMsg {

@@ -235,6 +235,10 @@ impl Engine {
         Ok(())
     }
 
+    pub fn has_unsaved_changes(&self) -> bool {
+        self.generation.load(Ordering::SeqCst) != *self.saved_generation.read()
+    }
+
     fn maybe_save(&self) {
         if self.config.snapshot_interval_secs == 0 {
             return;
@@ -256,6 +260,23 @@ impl Engine {
 
     pub fn path(&self, slot: SlotId, buf: &mut Vec<u8>) {
         self.store.read().path(slot, buf);
+    }
+
+    /// Run a query and render matching paths while holding the store lock once.
+    pub fn search_paths(&self, q: &str, opts: QueryOptions) -> Result<(Vec<PathBuf>, QueryResult)> {
+        use std::os::unix::ffi::OsStringExt;
+        let generation = self.generation.load(Ordering::SeqCst);
+        let store = self.store.read();
+        let result = crate::query::run(&store, generation, q, opts)?;
+        let mut paths = Vec::with_capacity(result.slots.len());
+        let mut buf = Vec::new();
+        for &slot in &result.slots {
+            store.path(slot, &mut buf);
+            paths.push(PathBuf::from(std::ffi::OsString::from_vec(std::mem::take(
+                &mut buf,
+            ))));
+        }
+        Ok((paths, result))
     }
 
     pub fn stats(&self) -> (u64, u64, u64) {

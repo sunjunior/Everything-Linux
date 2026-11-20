@@ -1,5 +1,7 @@
 use everything_core::config::Config;
 use everything_core::ipc::{self, Request, WireOptions};
+use everything_core::model::{QueryOptions, SortBy};
+use everything_core::sdk::LocalEngine;
 
 fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -15,6 +17,7 @@ fn main() -> anyhow::Result<()> {
     let mut cmd: Option<String> = None;
     let mut cmd_arg: Option<String> = None;
     let mut json = false;
+    let mut local = false;
 
     let mut i = 0;
     while i < args.len() {
@@ -26,6 +29,7 @@ fn main() -> anyhow::Result<()> {
             "-w" | "--whole-word" => opts.whole_word = true,
             "--path" => opts.path = true,
             "--json" => json = true,
+            "--local" => local = true,
             "--file" => opts.file_only = true,
             "--folder" => opts.folder_only = true,
             "-s" | "--sort" => {
@@ -73,6 +77,10 @@ fn main() -> anyhow::Result<()> {
         options: opts,
     };
 
+    if local {
+        return run_local(config, &req, json);
+    }
+
     let (header, lines) = match ipc::client_call(&config.socket_path, &req) {
         Ok(v) => v,
         Err(e) => {
@@ -116,6 +124,97 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+fn query_options(req: &Request, max_results: usize) -> QueryOptions {
+    QueryOptions {
+        case_sensitive: req.options.case,
+        regex: req.options.regex,
+        whole_word: req.options.whole_word,
+        path: req.options.path,
+        diacritics: req.options.diacritics,
+        file_only: req.options.file_only,
+        folder_only: req.options.folder_only,
+        sort: SortBy::parse(&req.options.sort).unwrap_or_default(),
+        limit: if req.options.limit == 0 {
+            max_results
+        } else {
+            req.options.limit
+        },
+    }
+}
+
+fn run_local(mut config: Config, req: &Request, json: bool) -> anyhow::Result<()> {
+    config.watch_enabled = false;
+    let max_results = config.max_results;
+    let roots = config.roots.clone();
+    let engine = LocalEngine::open(config, true)?;
+    match req.cmd.as_str() {
+        "query" => {
+            let options = query_options(req, max_results);
+            let hits = engine.search_paths(&req.text, options)?;
+            let lines: Vec<String> = hits
+                .paths
+                .iter()
+                .map(|p| p.to_string_lossy().into_owned())
+                .collect();
+            if json {
+                let obj = serde_json::json!({
+                    "count": lines.len(),
+                    "total": hits.result.total_matched,
+                    "elapsed_ms": hits.result.elapsed_ms,
+                    "generation": hits.result.generation,
+                    "truncated": hits.result.truncated,
+                    "results": lines,
+                });
+                println!("{obj}");
+            } else {
+                for line in &lines {
+                    println!("{line}");
+                }
+            }
+            eprintln!(
+                "# {} results ({} total), {:.2} ms, generation {}",
+                lines.len(),
+                hits.result.total_matched,
+                hits.result.elapsed_ms,
+                hits.result.generation
+            );
+            if hits.result.truncated {
+                eprintln!("# truncated: use --limit 0 for all results");
+            }
+        }
+        "status" => {
+            let (files, dirs, generation) = engine.status();
+            let (full, incr) = engine.update_counters();
+            let mut lines = vec![
+                format!("files={files}"),
+                format!("dirs={dirs}"),
+                format!("generation={generation}"),
+                format!("watches={}", engine.watch_count()),
+                format!("full_rebuilds={full}"),
+                format!("incremental_updates={incr}"),
+            ];
+            for root in &roots {
+                lines.push(format!("root={}", root.display()));
+            }
+            for line in &lines {
+                println!("{line}");
+            }
+            eprintln!(
+                "# {} results (0 total), 0.00 ms, generation {}",
+                lines.len(),
+                generation
+            );
+        }
+        "save" => engine.save()?,
+        "reindex" => engine.reindex()?,
+        "add" => engine.add_root(std::path::Path::new(&req.text))?,
+        "remove" => engine.remove_root(std::path::Path::new(&req.text))?,
+        "shutdown" => {}
+        other => anyhow::bail!("local mode does not support command: {other}"),
+    }
+    Ok(())
+}
+
 fn print_help() {
     println!("everything - Everything-like file search client for Linux\n");
     println!("Usage: everything [OPTIONS] [QUERY...]\n");
@@ -135,6 +234,7 @@ fn print_help() {
     println!("  -s, --sort <FIELD>     name|path|size|mtime (prefix - for descending)");
     println!("  -l, --limit <N>        max results (0 = all)");
     println!("      --json             JSON output");
+    println!("      --local            run the index in this process (no daemon/IPC)");
     println!("  -h, --help             show this help\n");
     println!("Query syntax:");
     println!("  space = AND, | = OR, ! = NOT, parentheses supported");

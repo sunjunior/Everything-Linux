@@ -6,6 +6,7 @@ pub mod ipc;
 pub mod monitor;
 pub mod persist;
 pub mod query;
+pub mod sdk;
 pub mod store;
 pub mod walker;
 
