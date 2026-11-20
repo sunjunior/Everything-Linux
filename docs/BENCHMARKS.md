@@ -65,7 +65,7 @@ Everything 官方数据来自 voidtools FAQ：
 - 删除、改名、目录子树新增均走同一增量路径；
 - 快照文件（`db.eldb`/`db.tmp`）、socket 等内部路径在扫描和 inotify 事件中均被排除，保存快照不会再触发索引更新；
 - 只有 `generation` 变化时才按 `snapshot_interval_secs` 落盘；
-- `cargo test --offline`：**29 个测试全部通过**（store 8、persist 3、query 10、incremental 5、auto_root 3）。
+- `cargo test --offline`：**30 个测试全部通过**（store 8、persist 3、query 10、incremental 5、auto_root 3、gui icon 1）。
 
 ## 与 v0.1 的对比
 

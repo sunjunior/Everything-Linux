@@ -14,6 +14,26 @@ use everything_core::config::Config;
 use everything_core::ipc::{self, Header, Request, WireOptions};
 
 const EMBEDDED_DAEMON: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/everythingd"));
+const ICON_16: &[u8] = include_bytes!("../assets/icon-16.png");
+const ICON_24: &[u8] = include_bytes!("../assets/icon-24.png");
+const ICON_32: &[u8] = include_bytes!("../assets/icon-32.png");
+const ICON_48: &[u8] = include_bytes!("../assets/icon-48.png");
+const ICON_64: &[u8] = include_bytes!("../assets/icon-64.png");
+const ICON_128: &[u8] = include_bytes!("../assets/icon-128.png");
+const ICON_256: &[u8] = include_bytes!("../assets/icon-256.png");
+
+fn app_icon(bytes: &'static [u8]) -> Option<gtk::gdk_pixbuf::Pixbuf> {
+    gtk::gdk_pixbuf::Pixbuf::from_read(std::io::Cursor::new(bytes)).ok()
+}
+
+fn app_icons() -> Vec<gtk::gdk_pixbuf::Pixbuf> {
+    [
+        ICON_16, ICON_24, ICON_32, ICON_48, ICON_64, ICON_128, ICON_256,
+    ]
+    .into_iter()
+    .filter_map(app_icon)
+    .collect()
+}
 
 fn file_uri(path: &str) -> String {
     let mut out = String::from("file://");
@@ -301,6 +321,10 @@ fn main() -> anyhow::Result<()> {
     if gtk::init().is_ok() {
         maybe_reexec_for_im();
     }
+    let icons = app_icons();
+    if !icons.is_empty() {
+        gtk::Window::set_default_icon_list(&icons);
+    }
     let config = Config::load()?;
     let gui_socket = gui_socket_path(&config);
     let self_exe = std::env::current_exe().ok();
@@ -348,6 +372,9 @@ fn build_ui(app: &gtk::Application, config: Config) {
         .default_width(900)
         .default_height(600)
         .build();
+    if let Some(icon) = app_icon(ICON_256) {
+        window.set_icon(Some(&icon));
+    }
     let _ = WINDOW.set(WindowRef(window.clone()));
 
     let vbox = gtk::Box::new(gtk::Orientation::Vertical, 6);
@@ -576,13 +603,22 @@ fn build_ui(app: &gtk::Application, config: Config) {
         _hold: hold,
     }));
 
-    let theme = gtk::IconTheme::default().expect("default icon theme");
-    let chosen = ["system-search", "edit-find", "gtk-find"]
-        .into_iter()
-        .find(|n| theme.has_icon(n))
-        .unwrap_or("applications-system");
-    let icon_name = std::ffi::CString::new(chosen).unwrap();
-    let icon = unsafe { gtk_sys::gtk_status_icon_new_from_icon_name(icon_name.as_ptr()) };
+    let icon = match app_icon(ICON_48) {
+        Some(pixbuf) => unsafe {
+            gtk_sys::gtk_status_icon_new_from_pixbuf(
+                gtk::glib::translate::ToGlibPtr::to_glib_none(&pixbuf).0,
+            )
+        },
+        None => {
+            let theme = gtk::IconTheme::default().expect("default icon theme");
+            let chosen = ["system-search", "edit-find", "gtk-find"]
+                .into_iter()
+                .find(|n| theme.has_icon(n))
+                .unwrap_or("applications-system");
+            let icon_name = std::ffi::CString::new(chosen).unwrap();
+            unsafe { gtk_sys::gtk_status_icon_new_from_icon_name(icon_name.as_ptr()) }
+        }
+    };
     if !icon.is_null() {
         install_tray_handlers(icon, tray);
     }
@@ -628,4 +664,15 @@ fn install_tray_handlers(icon: *mut GtkStatusIcon, tray: &'static TrayData) {
         );
     }
     let _ = &tray.app;
+}
+
+#[cfg(test)]
+mod icon_tests {
+    use super::*;
+
+    #[test]
+    fn embedded_window_and_tray_icons_decode() {
+        assert_eq!(app_icons().len(), 7);
+        assert!(app_icon(ICON_48).is_some());
+    }
 }

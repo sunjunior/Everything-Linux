@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <title>Everything-Linux</title>
+  <g fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="152" cy="106" r="72.5" stroke="#963800" stroke-width="40"/>
+    <path d="M99.5 158.5 L32 225" stroke="#963800" stroke-width="40"/>
+    <circle cx="152" cy="106" r="72.5" stroke="#ff8000" stroke-width="32"/>
+    <path d="M99.5 158.5 L32 225" stroke="#ff8000" stroke-width="32"/>
+  </g>
+</svg>

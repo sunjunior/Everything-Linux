@@ -1,5 +1,7 @@
 # Everything-Linux
 
+<p align="center"><img src="crates/everything-gtk/assets/icon-256.png" width="128" alt="Everything-Linux icon"></p>
+
 一个行为上仿照 voidtools Everything 的 Linux 文件名搜索工具：**常驻内存索引、输入即出结果、实时增量更新**。
 
 ## 背景
@@ -19,7 +21,7 @@ Everything 在 Windows 上的极速来自两个系统事实：直接解析 NTFS 
 - 实时增量：创建/删除/重命名/修改/目录子树，inotify 溢出自动全量重建
 - 持久化：zstd 快照，原子替换，配置/数据走 XDG 标准路径
 - 前后端分离：守护进程 + CLI + GTK3 GUI，通过 Unix socket IPC 通信
-- GUI：任务栏图标（关闭窗口隐藏到托盘、双击恢复、右键退出）、单实例（重复启动自动唤起已有窗口）
+- GUI：Everything 风格橙色放大镜图标（窗口 + 托盘）、任务栏图标（关闭窗口隐藏到托盘、双击恢复、右键退出）、单实例（重复启动自动唤起已有窗口）
 - 结果右键菜单：`打开`、`打开路径`（打开父目录并选中该项）、`复制完整路径和文件名`
 - 单文件分发：GUI 内嵌守护进程，拷贝一个文件即可使用
 
