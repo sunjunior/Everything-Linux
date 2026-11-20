@@ -113,6 +113,10 @@ impl Engine {
         self.monitor.as_ref()
     }
 
+    pub fn take_monitor(&mut self) -> Option<Arc<Monitor>> {
+        self.monitor.take()
+    }
+
     pub fn scan_configured_roots(&mut self) -> Result<()> {
         let roots = self.config.roots.clone();
         let mut changed = false;

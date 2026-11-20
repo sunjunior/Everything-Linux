@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use parking_lot::Mutex;
+use parking_lot::{Mutex, RwLock};
 
 use crate::config::Config;
 use crate::engine::Engine;
@@ -19,8 +19,9 @@ pub struct SearchHits {
 /// In-process frontend/backend coupling: owns the index, inotify monitor and
 /// tick thread, and exposes a direct Rust API with no IPC or serialization.
 pub struct LocalEngine {
-    engine: Arc<Mutex<Engine>>,
+    engine: Arc<RwLock<Arc<Mutex<Engine>>>>,
     running: Arc<AtomicBool>,
+    rebuilding: Arc<AtomicBool>,
     ticker: Option<JoinHandle<()>>,
 }
 
@@ -29,17 +30,22 @@ impl LocalEngine {
         let mut engine = Engine::open(config, load_snapshot)?;
         engine.scan_configured_roots()?;
         engine.start_monitor()?;
-        let engine = Arc::new(Mutex::new(engine));
+        let engine = Arc::new(RwLock::new(Arc::new(Mutex::new(engine))));
         let running = Arc::new(AtomicBool::new(true));
+        let rebuilding = Arc::new(AtomicBool::new(false));
         let ticker = {
             let engine = engine.clone();
             let running = running.clone();
+            let rebuilding = rebuilding.clone();
             std::thread::Builder::new()
                 .name("local-engine-tick".into())
                 .spawn(move || {
                     while running.load(Ordering::SeqCst) {
-                        if let Some(mut eng) = engine.try_lock() {
-                            let _ = eng.tick();
+                        if !rebuilding.load(Ordering::SeqCst) {
+                            let current = engine.read().clone();
+                            if let Some(mut eng) = current.try_lock() {
+                                let _ = eng.tick();
+                            }
                         }
                         std::thread::sleep(Duration::from_millis(10));
                     }
@@ -49,46 +55,57 @@ impl LocalEngine {
         Ok(Self {
             engine,
             running,
+            rebuilding,
             ticker,
         })
     }
 
+    fn current(&self) -> Arc<Mutex<Engine>> {
+        self.engine.read().clone()
+    }
+
+    pub fn generation(&self) -> u64 {
+        self.current().lock().stats().2
+    }
+
     pub fn search_slots(&self, q: &str, opts: QueryOptions) -> Result<QueryResult> {
-        self.engine.lock().search_slots(q, opts)
+        self.current().lock().search_slots(q, opts)
     }
 
     pub fn path(&self, slot: u32) -> Option<PathBuf> {
-        self.engine.lock().slot_path(slot)
+        self.current().lock().slot_path(slot)
     }
 
     pub fn search_paths(&self, q: &str, opts: QueryOptions) -> Result<SearchHits> {
-        let engine = self.engine.lock();
+        let engine = self.current();
+        let engine = engine.lock();
         let (paths, result) = engine.search_paths(q, opts)?;
         Ok(SearchHits { paths, result })
     }
 
     pub fn status(&self) -> (u64, u64, u64) {
-        self.engine.lock().stats()
+        self.current().lock().stats()
     }
 
     pub fn watch_count(&self) -> usize {
-        self.engine.lock().watch_count()
+        self.current().lock().watch_count()
     }
 
     pub fn update_counters(&self) -> (u64, u64) {
-        self.engine.lock().update_counters()
+        self.current().lock().update_counters()
     }
 
     pub fn save(&self) -> Result<()> {
-        self.engine.lock().save()
+        self.current().lock().save()
     }
 
     pub fn reindex(&self) -> Result<()> {
-        self.engine.lock().reindex()
+        self.current().lock().reindex()
     }
 
     pub fn add_root(&self, path: &Path) -> Result<()> {
-        let mut engine = self.engine.lock();
+        let current = self.current();
+        let mut engine = current.lock();
         let added = engine.add_root(path)?;
         engine.config.mark_manual_roots();
         if added {
@@ -100,7 +117,8 @@ impl LocalEngine {
     }
 
     pub fn remove_root(&self, path: &Path) -> Result<()> {
-        let mut engine = self.engine.lock();
+        let current = self.current();
+        let mut engine = current.lock();
         engine.remove_root(path)?;
         engine.config.mark_manual_roots();
         engine.rebuild();
@@ -109,12 +127,46 @@ impl LocalEngine {
         Ok(())
     }
 
+    /// Rebuild a new root in the background while the old index keeps serving
+    /// queries; swap the engine atomically when the new one is ready.
     pub fn set_auto_root(&self, frontend: &Path) -> Result<bool> {
-        self.engine.lock().set_auto_root(frontend)
+        let current = self.current();
+        let mut cfg = current.lock().config.clone();
+        if !cfg.auto_root {
+            return Ok(false);
+        }
+        let dir = frontend
+            .parent()
+            .map(|p| p.to_path_buf())
+            .or_else(|| std::env::current_dir().ok())
+            .unwrap_or_else(|| PathBuf::from("."));
+        if cfg.exe_path.as_deref() == Some(frontend) && cfg.roots == vec![dir.clone()] {
+            return Ok(false);
+        }
+        cfg.exe_path = Some(frontend.to_path_buf());
+        cfg.roots = vec![dir];
+
+        self.rebuilding.store(true, Ordering::SeqCst);
+        drop(current.lock().take_monitor());
+
+        let result = (|| -> Result<bool> {
+            let mut new_engine = Engine::open(cfg.clone(), false)?;
+            new_engine.scan_configured_roots()?;
+            new_engine.start_monitor()?;
+            let new_engine = Arc::new(Mutex::new(new_engine));
+            *self.engine.write() = new_engine;
+            Ok(true)
+        })();
+
+        if result.is_err() {
+            let _ = current.lock().start_monitor();
+        }
+        self.rebuilding.store(false, Ordering::SeqCst);
+        result
     }
 
     pub fn save_config(&self) -> Result<()> {
-        self.engine.lock().config.save()
+        self.current().lock().config.save()
     }
 
     pub fn shutdown(&mut self) {
@@ -124,7 +176,8 @@ impl LocalEngine {
         if let Some(ticker) = self.ticker.take() {
             let _ = ticker.join();
         }
-        let engine = self.engine.lock();
+        let engine = self.current();
+        let engine = engine.lock();
         if engine.has_unsaved_changes() {
             let _ = engine.save();
         }

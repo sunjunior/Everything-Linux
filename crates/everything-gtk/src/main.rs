@@ -159,6 +159,8 @@ unsafe impl Sync for EntryRef {}
 
 static WINDOW: OnceLock<WindowRef> = OnceLock::new();
 static ENTRY: OnceLock<EntryRef> = OnceLock::new();
+static QUERY_TX: OnceLock<std::sync::mpsc::Sender<String>> = OnceLock::new();
+static LAST_QUERY: OnceLock<Mutex<String>> = OnceLock::new();
 
 fn gui_socket_path(config: &Config) -> PathBuf {
     let mut os = config.socket_path.clone().into_os_string();
@@ -413,7 +415,7 @@ fn build_ui(
     ));
     entry.set_hexpand(true);
 
-    let store = gtk::ListStore::new(&[u32::static_type()]);
+    let store = gtk::ListStore::new(&[u32::static_type(), u64::static_type()]);
     let tree = gtk::TreeView::with_model(&store);
     let column = gtk::TreeViewColumn::new();
     column.set_title("Path");
@@ -452,6 +454,8 @@ fn build_ui(
     window.add(&vbox);
 
     let (query_tx, query_rx) = std::sync::mpsc::channel::<String>();
+    let _ = QUERY_TX.set(query_tx.clone());
+    let _ = LAST_QUERY.set(Mutex::new(String::new()));
     #[allow(deprecated)]
     let (result_tx, result_rx) = glib::MainContext::channel(glib::Priority::DEFAULT);
 
@@ -526,8 +530,9 @@ fn build_ui(
         let status = status.clone();
         result_rx.attach(None, move |msg: ResultMsg| {
             store.clear();
+            let generation = msg.header.as_ref().map(|h| h.generation).unwrap_or(0);
             for slot in &msg.slots {
-                store.set(&store.append(), &[(0, slot)]);
+                store.set(&store.append(), &[(0, slot), (1, &generation)]);
             }
             let label = match (msg.header, msg.error) {
                 (Some(h), _) if h.ok => format!(
@@ -545,7 +550,11 @@ fn build_ui(
     {
         let tx = query_tx.clone();
         entry.connect_changed(move |e| {
-            let _ = tx.send(e.text().to_string());
+            let text = e.text().to_string();
+            if let Some(last) = LAST_QUERY.get() {
+                *last.lock().unwrap() = text.clone();
+            }
+            let _ = tx.send(text);
         });
     }
     entry.connect_activate(|_| {});
@@ -556,7 +565,12 @@ fn build_ui(
         tree.connect_row_activated(move |_tree, path, _col| {
             if let Some(iter) = model.iter(path) {
                 let slot: u32 = model.value(&iter, 0).get().unwrap_or(u32::MAX);
-                if let Some(p) = local_rows.get().and_then(|engine| engine.path(slot)) {
+                let row_gen: u64 = model.value(&iter, 1).get().unwrap_or(0);
+                if let Some(p) = local_rows
+                    .get()
+                    .filter(|engine| engine.generation() == row_gen)
+                    .and_then(|engine| engine.path(slot))
+                {
                     open_target(&p.to_string_lossy());
                 }
             }
@@ -576,8 +590,10 @@ fn build_ui(
                 tree.selection().select_path(&path);
                 if let Some(iter) = model.iter(&path) {
                     let slot: u32 = model.value(&iter, 0).get().unwrap_or(u32::MAX);
+                    let row_gen: u64 = model.value(&iter, 1).get().unwrap_or(0);
                     let value = local_menu
                         .get()
+                        .filter(|engine| engine.generation() == row_gen)
                         .and_then(|engine| engine.path(slot))
                         .map(|p| p.to_string_lossy().into_owned())
                         .unwrap_or_default();
