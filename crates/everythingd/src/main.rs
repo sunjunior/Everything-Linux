@@ -10,6 +10,7 @@ fn main() -> anyhow::Result<()> {
     let mut config = Config::load()?;
     let mut no_snapshot = false;
     let mut roots: Vec<PathBuf> = Vec::new();
+    let mut socket_override = false;
     let mut frontend_exe: Option<PathBuf> = None;
     let mut quiet = false;
 
@@ -47,6 +48,7 @@ fn main() -> anyhow::Result<()> {
                     anyhow::bail!("--socket requires a path");
                 }
                 config.socket_path = PathBuf::from(&args[i]);
+                socket_override = true;
             }
             "--help" | "-h" => {
                 print_help();
@@ -56,6 +58,9 @@ fn main() -> anyhow::Result<()> {
         }
         i += 1;
     }
+    // One-off CLI overrides must not permanently disable auto-root in the
+    // user's saved config (a benchmark/debug run used to do exactly that).
+    let transient_launch = !roots.is_empty() || socket_override;
     if !roots.is_empty() {
         for r in roots {
             if !config.roots.contains(&r) {
@@ -126,7 +131,9 @@ fn main() -> anyhow::Result<()> {
                 eng.watch_count()
             );
             let _ = eng.save();
-            let _ = eng.config.save();
+            if !transient_launch {
+                let _ = eng.config.save();
+            }
         })
         .expect("spawn initial scan");
 
@@ -326,11 +333,11 @@ fn print_help() {
     println!("everythingd - Everything-like index daemon for Linux\n");
     println!("Usage: everythingd [OPTIONS]\n");
     println!("Options:");
-    println!("  -r, --root <PATH>     directory to index (repeatable; default: working directory)");
+    println!("  -r, --root <PATH>     one-off root (repeatable; not saved to config)");
     println!("      --no-snapshot     ignore saved snapshot, rebuild from scratch");
     println!("      --no-watch        disable inotify monitoring");
     println!("      --threads <N>     number of indexing threads");
-    println!("      --socket <PATH>   IPC socket path");
+    println!("      --socket <PATH>   one-off IPC socket path (not saved)");
     println!("  -q, --quiet           no log output");
     println!("  -h, --help            show this help");
 }

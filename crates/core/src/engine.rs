@@ -223,7 +223,6 @@ impl Engine {
         self.config.exe_path = Some(frontend.to_path_buf());
         self.config.roots = vec![dir];
         self.reindex()?;
-        self.config.save()?;
         Ok(true)
     }
 
