@@ -318,12 +318,13 @@ fn maybe_reexec_for_im() {
 fn main() -> anyhow::Result<()> {
     ensure_ime_env();
     // Initialize GTK early so we can verify whether an IM module actually loaded.
-    if gtk::init().is_ok() {
+    let gtk_ready = gtk::init().is_ok();
+    if gtk_ready {
         maybe_reexec_for_im();
-    }
-    let icons = app_icons();
-    if !icons.is_empty() {
-        gtk::Window::set_default_icon_list(&icons);
+        let icons = app_icons();
+        if !icons.is_empty() {
+            gtk::Window::set_default_icon_list(&icons);
+        }
     }
     let config = Config::load()?;
     let gui_socket = gui_socket_path(&config);
@@ -372,9 +373,6 @@ fn build_ui(app: &gtk::Application, config: Config) {
         .default_width(900)
         .default_height(600)
         .build();
-    if let Some(icon) = app_icon(ICON_256) {
-        window.set_icon(Some(&icon));
-    }
     let _ = WINDOW.set(WindowRef(window.clone()));
 
     let vbox = gtk::Box::new(gtk::Orientation::Vertical, 6);
