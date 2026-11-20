@@ -53,6 +53,14 @@ impl LocalEngine {
         })
     }
 
+    pub fn search_slots(&self, q: &str, opts: QueryOptions) -> Result<QueryResult> {
+        self.engine.lock().search_slots(q, opts)
+    }
+
+    pub fn path(&self, slot: u32) -> Option<PathBuf> {
+        self.engine.lock().slot_path(slot)
+    }
+
     pub fn search_paths(&self, q: &str, opts: QueryOptions) -> Result<SearchHits> {
         let engine = self.engine.lock();
         let (paths, result) = engine.search_paths(q, opts)?;

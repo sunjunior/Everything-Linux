@@ -64,7 +64,7 @@ fn main() -> anyhow::Result<()> {
             },
         ),
     ];
-    for (q, opts) in cases {
+    for &(q, opts) in &cases {
         let _ = engine.search_paths(q, opts)?;
         let mut times = Vec::new();
         let (mut count, mut total) = (0, 0);
@@ -82,7 +82,26 @@ fn main() -> anyhow::Result<()> {
         }
         times.sort_by(|a, b| a.partial_cmp(b).unwrap());
         println!(
-            "query={q}\tcount={count}\ttotal={total}\tmedian_ms={:.2}\tmin_ms={:.2}",
+            "paths query={q}\tcount={count}\ttotal={total}\tmedian_ms={:.2}\tmin_ms={:.2}",
+            times[times.len() / 2],
+            times[0]
+        );
+    }
+
+    for &(q, opts) in &cases {
+        let _ = engine.search_slots(q, opts)?;
+        let mut times = Vec::new();
+        let (mut count, mut total) = (0, 0);
+        for _ in 0..10 {
+            let t = Instant::now();
+            let result = engine.search_slots(q, opts)?;
+            times.push(t.elapsed().as_secs_f64() * 1000.0);
+            count = result.slots.len();
+            total = result.total_matched;
+        }
+        times.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        println!(
+            "slots query={q}\tcount={count}\ttotal={total}\tmedian_ms={:.2}\tmin_ms={:.2}",
             times[times.len() / 2],
             times[0]
         );

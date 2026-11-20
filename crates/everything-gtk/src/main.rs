@@ -145,7 +145,7 @@ unsafe extern "C" fn on_status_icon_button_press(
 
 struct ResultMsg {
     header: Option<Header>,
-    lines: Vec<String>,
+    slots: Vec<u32>,
     error: Option<String>,
 }
 
@@ -408,13 +408,28 @@ fn build_ui(
     ));
     entry.set_hexpand(true);
 
-    let store = gtk::ListStore::new(&[String::static_type()]);
+    let store = gtk::ListStore::new(&[u32::static_type()]);
     let tree = gtk::TreeView::with_model(&store);
     let column = gtk::TreeViewColumn::new();
     column.set_title("Path");
     let renderer = gtk::CellRendererText::new();
     gtk::prelude::CellLayoutExt::pack_start(&column, &renderer, true);
-    gtk::prelude::CellLayoutExt::add_attribute(&column, &renderer, "text", 0);
+    {
+        let local_cell = local.clone();
+        gtk::prelude::TreeViewColumnExt::set_cell_data_func(
+            &column,
+            &renderer,
+            Some(Box::new(move |_col, cell, model, iter| {
+                let slot: u32 = model.value(iter, 0).get().unwrap_or(u32::MAX);
+                let text = local_cell
+                    .get()
+                    .and_then(|engine| engine.path(slot))
+                    .map(|path| path.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                cell.set_property("text", text);
+            })),
+        );
+    }
     tree.append_column(&column);
     tree.set_headers_visible(false);
 
@@ -452,7 +467,7 @@ fn build_ui(
                 Err(e) => {
                     let _ = result_tx.send(ResultMsg {
                         header: None,
-                        lines: Vec::new(),
+                        slots: Vec::new(),
                         error: Some(e.to_string()),
                     });
                     return;
@@ -471,27 +486,23 @@ fn build_ui(
                     limit: 5000,
                     ..Default::default()
                 };
-                let msg = match engine.search_paths(&text, options) {
-                    Ok(hits) => ResultMsg {
+                let msg = match engine.search_slots(&text, options) {
+                    Ok(result) => ResultMsg {
                         header: Some(Header {
                             ok: true,
-                            count: hits.paths.len(),
-                            total: hits.result.total_matched,
-                            elapsed_ms: hits.result.elapsed_ms,
-                            generation: hits.result.generation,
-                            truncated: hits.result.truncated,
+                            count: result.slots.len(),
+                            total: result.total_matched,
+                            elapsed_ms: result.elapsed_ms,
+                            generation: result.generation,
+                            truncated: result.truncated,
                             message: String::new(),
                         }),
-                        lines: hits
-                            .paths
-                            .iter()
-                            .map(|p| p.to_string_lossy().into_owned())
-                            .collect(),
+                        slots: result.slots,
                         error: None,
                     },
                     Err(e) => ResultMsg {
                         header: None,
-                        lines: Vec::new(),
+                        slots: Vec::new(),
                         error: Some(e.to_string()),
                     },
                 };
@@ -505,8 +516,8 @@ fn build_ui(
         let status = status.clone();
         result_rx.attach(None, move |msg: ResultMsg| {
             store.clear();
-            for line in &msg.lines {
-                store.set(&store.append(), &[(0, &line)]);
+            for slot in &msg.slots {
+                store.set(&store.append(), &[(0, slot)]);
             }
             let label = match (msg.header, msg.error) {
                 (Some(h), _) if h.ok => format!(
@@ -531,10 +542,13 @@ fn build_ui(
 
     {
         let model = tree.model().unwrap();
+        let local_rows = local.clone();
         tree.connect_row_activated(move |_tree, path, _col| {
             if let Some(iter) = model.iter(path) {
-                let value: String = model.value(&iter, 0).get().unwrap_or_default();
-                open_target(&value);
+                let slot: u32 = model.value(&iter, 0).get().unwrap_or(u32::MAX);
+                if let Some(p) = local_rows.get().and_then(|engine| engine.path(slot)) {
+                    open_target(&p.to_string_lossy());
+                }
             }
         });
     }
@@ -542,6 +556,7 @@ fn build_ui(
     // Right-click context menu on a result row: open / open path / copy path.
     {
         let model = tree.model().unwrap();
+        let local_menu = local.clone();
         tree.connect_button_press_event(move |tree, event| {
             if event.button() != 3 {
                 return glib::Propagation::Proceed;
@@ -550,7 +565,12 @@ fn build_ui(
             if let Some((Some(path), _, _, _)) = tree.path_at_pos(x as i32, y as i32) {
                 tree.selection().select_path(&path);
                 if let Some(iter) = model.iter(&path) {
-                    let value: String = model.value(&iter, 0).get().unwrap_or_default();
+                    let slot: u32 = model.value(&iter, 0).get().unwrap_or(u32::MAX);
+                    let value = local_menu
+                        .get()
+                        .and_then(|engine| engine.path(slot))
+                        .map(|p| p.to_string_lossy().into_owned())
+                        .unwrap_or_default();
                     if !value.is_empty() {
                         let menu = gtk::Menu::new();
                         let open = gtk::MenuItem::with_label("打开");

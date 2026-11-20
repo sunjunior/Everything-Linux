@@ -262,6 +262,18 @@ impl Engine {
         self.store.read().path(slot, buf);
     }
 
+    /// Run a query and return slot ids without rendering paths. Frontends that
+    /// render only visible rows can resolve paths lazily via `slot_path`.
+    pub fn search_slots(&self, q: &str, opts: QueryOptions) -> Result<QueryResult> {
+        let generation = self.generation.load(Ordering::SeqCst);
+        let store = self.store.read();
+        crate::query::run(&store, generation, q, opts)
+    }
+
+    pub fn slot_path(&self, slot: SlotId) -> Option<PathBuf> {
+        self.store.read().path_of(slot)
+    }
+
     /// Run a query and render matching paths while holding the store lock once.
     pub fn search_paths(&self, q: &str, opts: QueryOptions) -> Result<(Vec<PathBuf>, QueryResult)> {
         use std::os::unix::ffi::OsStringExt;

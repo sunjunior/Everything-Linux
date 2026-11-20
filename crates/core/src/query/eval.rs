@@ -409,6 +409,54 @@ pub fn run(store: &Store, generation: u64, query: &str, opts: QueryOptions) -> R
         slots.append(&mut v);
     }
 
+    let limit = opts.limit;
+    if limit > 0 && slots.len() > limit {
+        match opts.sort {
+            SortBy::Name => {
+                slots.select_nth_unstable_by(limit, |&a, &b| {
+                    store.folded(a).cmp(store.folded(b)).then_with(|| a.cmp(&b))
+                });
+            }
+            SortBy::NameDesc => {
+                slots.select_nth_unstable_by(limit, |&a, &b| {
+                    store.folded(b).cmp(store.folded(a)).then_with(|| b.cmp(&a))
+                });
+            }
+            SortBy::Size => {
+                slots.select_nth_unstable_by(limit, |&a, &b| {
+                    let sa = store.entry(a).map(|e| e.size).unwrap_or(0);
+                    let sb = store.entry(b).map(|e| e.size).unwrap_or(0);
+                    sa.cmp(&sb)
+                });
+            }
+            SortBy::SizeDesc => {
+                slots.select_nth_unstable_by(limit, |&a, &b| {
+                    let sa = store.entry(a).map(|e| e.size).unwrap_or(0);
+                    let sb = store.entry(b).map(|e| e.size).unwrap_or(0);
+                    sb.cmp(&sa)
+                });
+            }
+            SortBy::Mtime => {
+                slots.select_nth_unstable_by(limit, |&a, &b| {
+                    let ma = store.entry(a).map(|e| e.mtime).unwrap_or(0);
+                    let mb = store.entry(b).map(|e| e.mtime).unwrap_or(0);
+                    ma.cmp(&mb)
+                });
+            }
+            SortBy::MtimeDesc => {
+                slots.select_nth_unstable_by(limit, |&a, &b| {
+                    let ma = store.entry(a).map(|e| e.mtime).unwrap_or(0);
+                    let mb = store.entry(b).map(|e| e.mtime).unwrap_or(0);
+                    mb.cmp(&ma)
+                });
+            }
+            SortBy::Path | SortBy::PathDesc => {}
+        }
+        if !matches!(opts.sort, SortBy::Path | SortBy::PathDesc) {
+            slots.truncate(limit);
+        }
+    }
+
     match opts.sort {
         SortBy::Name => slots.sort_unstable_by(|&a, &b| {
             store.folded(a).cmp(store.folded(b)).then_with(|| a.cmp(&b))
@@ -456,9 +504,9 @@ pub fn run(store: &Store, generation: u64, query: &str, opts: QueryOptions) -> R
         }
     }
 
-    let truncated = opts.limit > 0 && slots.len() > opts.limit;
-    if truncated {
-        slots.truncate(opts.limit);
+    let truncated = limit > 0 && total > limit;
+    if limit > 0 && slots.len() > limit {
+        slots.truncate(limit);
     }
 
     Ok(QueryResult {

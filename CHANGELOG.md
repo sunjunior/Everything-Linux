@@ -7,6 +7,7 @@
 ### 新增与改进
 
 - 实验分支：新增进程内 `LocalEngine` SDK 与 `everything --local`；GUI 可在同进程内运行索引，省去 IPC。
+- 融合版 GUI 改为 slot 惰性渲染 + Top-N 截断，宽结果查询约快 30%，全路径约快 13–15%。
 
 ### 新增与改进
 

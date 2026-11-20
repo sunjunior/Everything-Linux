@@ -161,3 +161,53 @@ fn date_filter() {
     let got = names(&s, "dc:>2020-01-01", QueryOptions::default());
     assert!(got.is_empty());
 }
+
+#[test]
+fn limit_keeps_top_n_before_truncation() {
+    let s = fixture();
+    let opts = QueryOptions {
+        limit: 2,
+        ..Default::default()
+    };
+    let res = query::run(&s, 1, "*.rs", opts).unwrap();
+    let got: Vec<String> = res
+        .slots
+        .iter()
+        .map(|&slot| String::from_utf8_lossy(s.name(slot)).into_owned())
+        .collect();
+    assert_eq!(got, vec!["beta.rs", "nested_one.rs"]);
+    assert_eq!(res.total_matched, 3);
+    assert!(res.truncated);
+
+    let opts = QueryOptions {
+        limit: 2,
+        sort: everything_core::model::SortBy::NameDesc,
+        ..Default::default()
+    };
+    let res = query::run(&s, 1, "*.rs", opts).unwrap();
+    let got: Vec<String> = res
+        .slots
+        .iter()
+        .map(|&slot| String::from_utf8_lossy(s.name(slot)).into_owned())
+        .collect();
+    assert_eq!(got, vec!["nested_two.rs", "nested_one.rs"]);
+}
+
+#[test]
+fn size_desc_limit_keeps_largest() {
+    let s = fixture();
+    let opts = QueryOptions {
+        limit: 2,
+        sort: everything_core::model::SortBy::SizeDesc,
+        ..Default::default()
+    };
+    let res = query::run(&s, 1, "*.rs", opts).unwrap();
+    let got: Vec<String> = res
+        .slots
+        .iter()
+        .map(|&slot| String::from_utf8_lossy(s.name(slot)).into_owned())
+        .collect();
+    assert_eq!(got.len(), 2);
+    assert!(got.contains(&"nested_one.rs".to_string()));
+    assert!(got.contains(&"nested_two.rs".to_string()));
+}
