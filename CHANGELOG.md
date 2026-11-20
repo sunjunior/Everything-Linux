@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+### 新增与改进
+
+- CI 新增 Linux armv7 与 aarch64 构建，产物可附加到指定 Release。
+
 ## [v0.2.1beta] - 2026-11-20
 
 ### 新增与改进

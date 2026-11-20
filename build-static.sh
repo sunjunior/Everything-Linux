@@ -9,13 +9,23 @@ mkdir -p dist
 # Local builds default to offline; CI overrides with CARGO_FLAGS="" (or --locked).
 read -r -a CARGO_FLAGS <<< "${CARGO_FLAGS:---offline}"
 
-echo "[1/4] static CLI (everything)"
-cargo rustc "${CARGO_FLAGS[@]}" --release -p everything -- -C target-feature=+crt-static
-cp target/release/everything dist/everything
+if [ "${STATIC:-1}" = "1" ]; then
+  echo "[1/4] static CLI (everything)"
+  cargo rustc "${CARGO_FLAGS[@]}" --release -p everything -- -C target-feature=+crt-static
+  cp target/release/everything dist/everything
 
-echo "[2/4] static daemon (everythingd)"
-cargo rustc "${CARGO_FLAGS[@]}" --release -p everythingd -- -C target-feature=+crt-static
-cp target/release/everythingd dist/everythingd
+  echo "[2/4] static daemon (everythingd)"
+  cargo rustc "${CARGO_FLAGS[@]}" --release -p everythingd -- -C target-feature=+crt-static
+  cp target/release/everythingd dist/everythingd
+else
+  echo "[1/4] CLI (everything, dynamic)"
+  cargo build "${CARGO_FLAGS[@]}" --release -p everything
+  cp target/release/everything dist/everything
+
+  echo "[2/4] daemon (everythingd, dynamic)"
+  cargo build "${CARGO_FLAGS[@]}" --release -p everythingd
+  cp target/release/everythingd dist/everythingd
+fi
 
 echo "[3/4] GTK3 GUI (links system GTK3, small binary)"
 cargo build "${CARGO_FLAGS[@]}" --release -p everything-gtk
