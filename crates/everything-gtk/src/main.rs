@@ -112,6 +112,127 @@ fn copy_path(path: &str) {
     }
 }
 
+fn show_message(kind: gtk::MessageType, title: &str, text: &str) {
+    let dialog = gtk::MessageDialog::new(
+        None::<&gtk::Window>,
+        gtk::DialogFlags::MODAL,
+        kind,
+        gtk::ButtonsType::Close,
+        text,
+    );
+    dialog.set_title(title);
+    if let Some(window) = WINDOW.get() {
+        dialog.set_transient_for(Some(&window.0));
+    }
+    dialog.run();
+    dialog.close();
+}
+
+fn refresh_now() {
+    if let (Some(tx), Some(last)) = (QUERY_TX.get(), LAST_QUERY.get()) {
+        let _ = tx.send(last.lock().unwrap().clone());
+    }
+}
+
+fn confirm_delete(path: &std::path::Path) {
+    let meta = match std::fs::symlink_metadata(path) {
+        Ok(meta) => meta,
+        Err(err) => {
+            show_message(
+                gtk::MessageType::Error,
+                "删除失败",
+                &format!("无法访问 {}：{err}", path.display()),
+            );
+            return;
+        }
+    };
+
+    let is_dir = meta.is_dir();
+    if let Ok(exe) = std::env::current_exe() {
+        if let (Ok(target), Ok(running)) = (path.canonicalize(), exe.canonicalize()) {
+            if target == running {
+                show_message(
+                    gtk::MessageType::Warning,
+                    "不能删除",
+                    "不能删除正在运行的程序。",
+                );
+                return;
+            }
+            if is_dir
+                && exe
+                    .parent()
+                    .and_then(|parent| parent.canonicalize().ok())
+                    .as_ref()
+                    == Some(&target)
+            {
+                show_message(
+                    gtk::MessageType::Warning,
+                    "不能删除",
+                    "不能删除正在运行程序所在的索引根目录。",
+                );
+                return;
+            }
+        }
+    }
+
+    if is_dir {
+        let non_empty = std::fs::read_dir(path)
+            .ok()
+            .and_then(|mut entries| entries.next())
+            .is_some();
+        if non_empty {
+            show_message(
+                gtk::MessageType::Warning,
+                "不能删除",
+                &format!("目录不是空的，不能删除：
+{}", path.display()),
+            );
+            return;
+        }
+    }
+
+    let kind = if is_dir { "目录" } else { "文件" };
+    let dialog = gtk::MessageDialog::new(
+        None::<&gtk::Window>,
+        gtk::DialogFlags::MODAL,
+        gtk::MessageType::Warning,
+        gtk::ButtonsType::YesNo,
+        &format!("确定要删除这个{kind}吗？"),
+    );
+    dialog.set_title("确认删除");
+    dialog.set_secondary_text(Some(&format!(
+        "{}
+
+删除后不可恢复。",
+        path.display()
+    )));
+    dialog.set_default_response(gtk::ResponseType::No);
+    if let Some(window) = WINDOW.get() {
+        dialog.set_transient_for(Some(&window.0));
+    }
+    let response = dialog.run();
+    dialog.close();
+    if response != gtk::ResponseType::Yes {
+        return;
+    }
+
+    let result = if is_dir {
+        std::fs::remove_dir(path)
+    } else {
+        std::fs::remove_file(path)
+    };
+    match result {
+        Ok(()) => refresh_now(),
+        Err(err) => show_message(
+            gtk::MessageType::Error,
+            "删除失败",
+            &format!("{}
+
+{err}", path.display()),
+        ),
+    }
+}
+
 struct TrayData {
     app: gtk::Application,
     window: gtk::ApplicationWindow,
@@ -691,26 +812,30 @@ fn build_ui(
                 if let Some(iter) = model.iter(&path) {
                     let slot: u32 = model.value(&iter, 0).get().unwrap_or(u32::MAX);
                     let row_gen: u64 = model.value(&iter, 1).get().unwrap_or(0);
-                    let value = local_menu
+                    let target = local_menu
                         .get()
                         .filter(|engine| engine.root_generation() == row_gen)
-                        .and_then(|engine| engine.path(slot))
-                        .map(|p| p.to_string_lossy().into_owned())
-                        .unwrap_or_default();
-                    if !value.is_empty() {
+                        .and_then(|engine| engine.path(slot));
+                    if let Some(target) = target {
+                        let value = target.to_string_lossy().into_owned();
                         let menu = gtk::Menu::new();
                         let open = gtk::MenuItem::with_label("打开");
                         let open_path = gtk::MenuItem::with_label("打开路径");
                         let copy = gtk::MenuItem::with_label("复制完整路径和文件名");
+                        let delete = gtk::MenuItem::with_label("删除");
                         let v1 = value.clone();
                         open.connect_activate(move |_| open_target(&v1));
                         let v2 = value.clone();
                         open_path.connect_activate(move |_| open_parent_and_select(&v2));
                         let v3 = value.clone();
                         copy.connect_activate(move |_| copy_path(&v3));
+                        let delete_target = target.clone();
+                        delete.connect_activate(move |_| confirm_delete(&delete_target));
                         menu.append(&open);
                         menu.append(&open_path);
                         menu.append(&copy);
+                        menu.append(&gtk::SeparatorMenuItem::new());
+                        menu.append(&delete);
                         let flag = menu_flag.clone();
                         menu.connect_hide(move |_| flag.set(false));
                         menu_flag.set(true);
