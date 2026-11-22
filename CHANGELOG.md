@@ -50,7 +50,6 @@
 - Linux aarch64：`everything-linux-aarch64.tar.gz`
 - Linux armv7：`everything-linux-armv7.tar.gz`
 - 每个包只含一个 `everything-gtk`，需要 GTK3 运行库；不含 CLI / daemon。
-- Windows 版本暂不提供，需单独移植文件监听、路径编码、单实例与 GTK3 运行时。
 
 ### 已知限制
 

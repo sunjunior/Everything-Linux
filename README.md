@@ -163,7 +163,6 @@ GUI 行为：关闭窗口隐藏到任务栏，双击托盘图标恢复，右键�
 
 ## 限制
 
-- Windows：当前只支持 Linux；Windows 需要单独移植 inotify/文件监听、路径编码、单实例与 GTK3 运行时。
 - 本轮发布只含 GUI，不提供 CLI/daemon；CLI 热查询仍走可选 socket 模式。
 - raw mmap 快照仍是原型，正式保存仍使用 zstd 快照。
 - 换根期间新旧索引同时存在，内存约翻倍。

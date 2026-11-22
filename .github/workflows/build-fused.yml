@@ -156,8 +156,6 @@ jobs:
             echo "每个压缩包只含一个 \`everything-gtk\`，解压后直接运行。"
             echo
             echo "运行要求：Linux + GTK3 运行库；不需要 daemon、CLI 或 Unix socket。"
-            echo
-            echo "Windows 暂不提供，需单独移植文件监听、路径编码、单实例与 GTK3 运行时。"
           } >> release-notes.md
 
       - name: Publish release
