@@ -76,7 +76,7 @@ cargo build --offline --release -p everything-gtk
 # 产物：target/release/everything-gtk
 ```
 
-融合 GUI 发布由 `.github/workflows/build-fused.yml` 完成：在 `v*-fused` 标签上构建 Linux x86_64 / aarch64 / armv7，每个压缩包只放一个 `everything-gtk`。x86_64 与 aarch64 使用原生 runner，armv7 使用 QEMU 容器；不再构建或内嵌 daemon。
+融合 GUI 发布由 `.github/workflows/build-fused.yml` 完成：在版本标签上构建 Linux x86_64 / aarch64 / armv7，每个压缩包只放一个 `everything-gtk`。x86_64 与 aarch64 使用原生 runner，armv7 使用 QEMU 容器；不再构建或内嵌 daemon。
 
 `build-static.sh` 仍可用于本地生成 CLI/daemon 静态产物，但融合发布不使用它：
 

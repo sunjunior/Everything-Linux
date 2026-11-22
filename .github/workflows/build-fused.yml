@@ -2,7 +2,7 @@ name: Release fused single-file GUI
 
 on:
   push:
-    tags: ['v*-fused']
+    tags: ['v*']
 
 permissions:
   contents: write
@@ -164,7 +164,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
-          name: "Everything-Linux ${{ github.ref_name }}（单文件 GUI）"
+          name: ${{ github.ref_name }}
           body_path: release-notes.md
           files: assets/everything-linux-*.tar.gz
           generate_release_notes: false
