@@ -174,7 +174,7 @@ checksum = "877a4ace8713b0bcf2a4e7eec82529c029f1d0619886d18145fea96c3ffe5c0f"
 
 [[package]]
 name = "everything"
-version = "0.3.0-beta"
+version = "0.3.1-beta"
 dependencies = [
  "anyhow",
  "everything_core",
@@ -186,7 +186,7 @@ dependencies = [
 
 [[package]]
 name = "everything-gtk"
-version = "0.3.0-beta"
+version = "0.3.1-beta"
 dependencies = [
  "anyhow",
  "everything_core",
@@ -198,7 +198,7 @@ dependencies = [
 
 [[package]]
 name = "everything_core"
-version = "0.3.0-beta"
+version = "0.3.1-beta"
 dependencies = [
  "anyhow",
  "crossbeam-channel",
@@ -219,7 +219,7 @@ dependencies = [
 
 [[package]]
 name = "everythingd"
-version = "0.3.0-beta"
+version = "0.3.1-beta"
 dependencies = [
  "anyhow",
  "everything_core",
