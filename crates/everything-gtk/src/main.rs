@@ -1,7 +1,8 @@
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::io::{Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use gdk_sys::GdkEventButton;
@@ -149,6 +150,23 @@ struct ResultMsg {
     slots: Vec<u32>,
     root_generation: u64,
     error: Option<String>,
+}
+
+fn select_slot(tree: &gtk::TreeView, model: &gtk::TreeModel, slot: u32) -> bool {
+    let mut iter = match model.iter_first() {
+        Some(iter) => iter,
+        None => return false,
+    };
+    loop {
+        if model.value(&iter, 0).get::<u32>().ok() == Some(slot) {
+            tree.selection().select_iter(&iter);
+            return true;
+        }
+        if !model.iter_next(&mut iter) {
+            break;
+        }
+    }
+    false
 }
 
 struct WindowRef(gtk::ApplicationWindow);
@@ -462,6 +480,10 @@ fn build_ui(
     let _ = LAST_QUERY.set(Mutex::new(String::new()));
     #[allow(deprecated)]
     let (result_tx, result_rx) = glib::MainContext::channel(glib::Priority::DEFAULT);
+    let current_slots: Rc<RefCell<Vec<u32>>> = Rc::new(RefCell::new(Vec::new()));
+    let current_epoch = Rc::new(Cell::new(0u64));
+    let menu_open = Rc::new(Cell::new(false));
+    let force_refresh = Rc::new(Cell::new(false));
 
     let config_worker = config.clone();
     let local_worker = local.clone();
@@ -536,11 +558,45 @@ fn build_ui(
 
     {
         let store = store.clone();
+        let tree = tree.clone();
+        let model = tree.model().unwrap();
+        let slots_seen = current_slots.clone();
+        let epoch_seen = current_epoch.clone();
+        let menu_seen = menu_open.clone();
+        let force_seen = force_refresh.clone();
         let status = status.clone();
         result_rx.attach(None, move |msg: ResultMsg| {
-            store.clear();
-            for slot in &msg.slots {
-                store.set(&store.append(), &[(0, slot), (1, &msg.root_generation)]);
+            if menu_seen.get() {
+                force_seen.set(true);
+                return glib::ControlFlow::Continue;
+            }
+            let same = *slots_seen.borrow() == msg.slots
+                && epoch_seen.get() == msg.root_generation;
+            if same {
+                tree.queue_draw();
+            } else {
+                let selected_slot = tree
+                    .selection()
+                    .selected()
+                    .and_then(|(_model, iter)| model.value(&iter, 0).get::<u32>().ok());
+                let scroll_value = tree.vadjustment().map(|adj| adj.value());
+                store.clear();
+                for slot in &msg.slots {
+                    store.set(&store.append(), &[(0, slot), (1, &msg.root_generation)]);
+                }
+                *slots_seen.borrow_mut() = msg.slots.clone();
+                epoch_seen.set(msg.root_generation);
+                let restored = selected_slot
+                    .map(|slot| select_slot(&tree, &model, slot))
+                    .unwrap_or(false);
+                if !restored {
+                    tree.selection().unselect_all();
+                }
+                if let Some(value) = scroll_value {
+                    if let Some(adj) = tree.vadjustment() {
+                        adj.set_value(value);
+                    }
+                }
             }
             let label = match (msg.header, msg.error) {
                 (Some(h), _) if h.ok => format!(
@@ -567,19 +623,29 @@ fn build_ui(
     }
     entry.connect_activate(|_| {});
 
-    // A root switch invalidates all slots. Refresh the current query when the
-    // root epoch changes; ordinary inotify increments leave rows/menu intact.
+    // Keep the visible result list in sync with inotify updates. Queries are
+    // debounced by the worker; pause while the menu is open or the window hidden.
     {
-        let local_epoch = local.clone();
+        let local_timer = local.clone();
+        let window_timer = window.clone();
+        let menu_timer = menu_open.clone();
+        let force_timer = force_refresh.clone();
         let tx = query_tx.clone();
-        let last_epoch = Cell::new(0u64);
-        glib::timeout_add_local(std::time::Duration::from_millis(300), move || {
-            if let Some(engine) = local_epoch.get() {
-                let epoch = engine.root_generation();
-                if last_epoch.get() == 0 {
-                    last_epoch.set(epoch);
-                } else if epoch != last_epoch.get() {
-                    last_epoch.set(epoch);
+        let last_gen = Cell::new(0u64);
+        let last_root = Cell::new(0u64);
+        glib::timeout_add_local(std::time::Duration::from_millis(250), move || {
+            if let Some(engine) = local_timer.get() {
+                if !window_timer.is_visible() || menu_timer.get() {
+                    return glib::ControlFlow::Continue;
+                }
+                let generation = engine.generation();
+                let root = engine.root_generation();
+                let stale = last_gen.get() != 0
+                    && (generation != last_gen.get() || root != last_root.get());
+                if last_gen.get() == 0 || stale || force_timer.get() {
+                    force_timer.set(false);
+                    last_gen.set(generation);
+                    last_root.set(root);
                     if let Some(last) = LAST_QUERY.get() {
                         let text = last.lock().unwrap().clone();
                         if !text.is_empty() {
@@ -614,6 +680,7 @@ fn build_ui(
     {
         let model = tree.model().unwrap();
         let local_menu = local.clone();
+        let menu_flag = menu_open.clone();
         tree.connect_button_press_event(move |tree, event| {
             if event.button() != 3 {
                 return glib::Propagation::Proceed;
@@ -644,6 +711,9 @@ fn build_ui(
                         menu.append(&open);
                         menu.append(&open_path);
                         menu.append(&copy);
+                        let flag = menu_flag.clone();
+                        menu.connect_hide(move |_| flag.set(false));
+                        menu_flag.set(true);
                         menu.show_all();
                         menu.popup_at_pointer(None);
                         return glib::Propagation::Stop;
