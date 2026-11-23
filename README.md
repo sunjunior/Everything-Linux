@@ -22,7 +22,6 @@ Everything 在 Windows 上的极速来自两个系统事实：直接解析 NTFS 
 - 持久化：zstd 快照，原子替换，配置/数据走 XDG 标准路径
 - 融合 GUI：索引、查询、inotify 全在 `everything-gtk` 进程内，无 daemon、无 IPC、无 Unix socket
 - 实时刷新：输入关键词后，文件新增/删除/原子替换会自动刷新结果列表（250ms 防抖，保留选中行）
-- 可选前后端分离：CLI + `everythingd` 仍保留，便于脚本、调试和旧用法
 - GUI：Everything 风格橙色放大镜图标（窗口 + 托盘）、任务栏图标（关闭窗口隐藏到托盘、双击恢复、右键退出）、单实例（重复启动自动唤起已有窗口）
 - 结果右键菜单：`打开`、`打开路径`（打开父目录并选中该项）、`复制完整路径和文件名`、`删除`（文件/空目录，二次确认）
 - 单文件分发：发布包只含一个约 3.6 MB 的 `everything-gtk`，需要系统 GTK3
@@ -45,8 +44,7 @@ Everything 在 Windows 上的极速来自两个系统事实：直接解析 NTFS 
        ▲                          │ 增量修改                      │
        │ 事件合并/溢出兜底          └──────────────────────────────┘
 
-融合 GUI： [GTK3] ─→ [LocalEngine] ─→ 同进程索引 / 查询 / tick
-可选 CLI： [everything] ─→ Unix socket ─→ [everythingd]
+融合架构 GUI： [GTK3] ─→ [LocalEngine] ─→ 同进程索引 / 查询 / tick
 ```
 
 工程结构：
@@ -66,7 +64,7 @@ build-static.sh      CLI/daemon 静态构建（融合 GUI 发布不走此脚本�
 
 ## 构建
 
-仓库不提交任何构建产物（`target/`、`dist/` 已忽略）。本地构建需要 Rust 1.85+（edition 2024）与 Cargo：
+本地构建需要 Rust 1.85+（edition 2024）与 Cargo：
 
 ```bash
 git clone https://github.com/sunjunior/Everything-Linux.git
@@ -161,12 +159,6 @@ GUI 行为：关闭窗口隐藏到任务栏，双击托盘图标恢复，右键�
 
 与 Windows Everything 1.4 官方数据（100 万文件约 100 MB 内存、45 MB 磁盘、约 1 分钟索引）处于同一内存级别。融合后省掉了 daemon 进程和 IPC，单进程比旧 daemon + GUI 的 RSS / PSS 分别低约 4 MB / 13 MB。详见 [`docs/INPROCESS_BENCH.md`](docs/INPROCESS_BENCH.md)。
 
-## 限制
-
-- 本轮发布只含 GUI，不提供 CLI/daemon；CLI 热查询仍走可选 socket 模式。
-- raw mmap 快照仍是原型，正式保存仍使用 zstd 快照。
-- 换根期间新旧索引同时存在，内存约翻倍。
-- 未实现：文件内容搜索、HTTP/ETP 接口、重复文件检测、`root:`/`empty:` 特殊函数、变音符号折叠、EFU 文件列表索引。GUI 在无系统托盘宿主的桌面环境中图标可能不可见（搜索功能不受影响）。
 
 ## 许可
 
