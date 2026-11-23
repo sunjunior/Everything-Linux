@@ -1,14 +1,21 @@
-name: Release fused single-file GUI
+name: Release fused GUI and CLI
 
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Existing tag to rebuild assets for'
+        required: true
+        default: 'v0.3.2beta'
 
 permissions:
   contents: write
 
 env:
   CARGO_TERM_COLOR: always
+  RELEASE_TAG: ${{ github.event.inputs.release_tag || github.ref_name }}
 
 jobs:
   x86_64:
@@ -31,17 +38,24 @@ jobs:
       - name: Build fused GUI
         run: cargo build --release --locked -p everything-gtk
 
+      - name: Build static fused CLI
+        run: cargo rustc --locked --release -p everything -- -C target-feature=+crt-static
+
       - name: Package
         run: |
-          mkdir -p package
+          mkdir -p package package-cli
           cp target/release/everything-gtk package/
+          cp target/release/everything package-cli/
           tar -czf everything-linux-x86_64.tar.gz -C package everything-gtk
-          file package/everything-gtk
+          tar -czf everything-cli-linux-x86_64.tar.gz -C package-cli everything
+          file package/everything-gtk package-cli/everything
 
       - uses: actions/upload-artifact@v4
         with:
           name: asset-x86_64
-          path: everything-linux-x86_64.tar.gz
+          path: |
+            everything-linux-x86_64.tar.gz
+            everything-cli-linux-x86_64.tar.gz
 
   aarch64:
     runs-on: ubuntu-24.04-arm
@@ -60,17 +74,24 @@ jobs:
       - name: Build fused GUI
         run: cargo build --release --locked -p everything-gtk
 
+      - name: Build static fused CLI
+        run: cargo rustc --locked --release -p everything -- -C target-feature=+crt-static
+
       - name: Package
         run: |
-          mkdir -p package
+          mkdir -p package package-cli
           cp target/release/everything-gtk package/
+          cp target/release/everything package-cli/
           tar -czf everything-linux-aarch64.tar.gz -C package everything-gtk
-          file package/everything-gtk
+          tar -czf everything-cli-linux-aarch64.tar.gz -C package-cli everything
+          file package/everything-gtk package-cli/everything
 
       - uses: actions/upload-artifact@v4
         with:
           name: asset-aarch64
-          path: everything-linux-aarch64.tar.gz
+          path: |
+            everything-linux-aarch64.tar.gz
+            everything-cli-linux-aarch64.tar.gz
 
   armv7:
     runs-on: ubuntu-24.04
@@ -82,7 +103,7 @@ jobs:
         with:
           platforms: arm
 
-      - name: Build fused GUI in armv7 container
+      - name: Build fused GUI and CLI in armv7 container
         run: |
           docker run --rm --platform linux/arm/v7 \
             -v "$PWD:/work" -w /work \
@@ -96,19 +117,24 @@ jobs:
               curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
               . "$HOME/.cargo/env"
               cargo build --release --locked -p everything-gtk
+              cargo rustc --locked --release -p everything -- -C target-feature=+crt-static
             '
 
       - name: Package
         run: |
-          mkdir -p package
+          mkdir -p package package-cli
           cp target/release/everything-gtk package/
+          cp target/release/everything package-cli/
           tar -czf everything-linux-armv7.tar.gz -C package everything-gtk
-          file package/everything-gtk
+          tar -czf everything-cli-linux-armv7.tar.gz -C package-cli everything
+          file package/everything-gtk package-cli/everything
 
       - uses: actions/upload-artifact@v4
         with:
           name: asset-armv7
-          path: everything-linux-armv7.tar.gz
+          path: |
+            everything-linux-armv7.tar.gz
+            everything-cli-linux-armv7.tar.gz
 
   release:
     needs: [x86_64, aarch64, armv7]
@@ -125,7 +151,7 @@ jobs:
       - name: Prepare release notes
         run: |
           set -euo pipefail
-          tag="${GITHUB_REF_NAME}"
+          tag="${RELEASE_TAG}"
           awk -v tag="$tag" '
             index($0, "## [" tag "]") == 1 {found=1; next}
             found && /^## \[/ {exit}
@@ -138,31 +164,40 @@ jobs:
 
           {
             echo
+            echo "## 交付件说明"
+            echo
+            echo "- \`everything-linux-<arch>.tar.gz\`：融合 GUI，单文件，索引在进程内运行；需要系统 GTK3，适合桌面使用。"
+            echo "- \`everything-cli-linux-<arch>.tar.gz\`：静态 CLI，不依赖 GTK；使用 \`everything --local '查询'\` 在进程内查询，不需要 daemon。默认 socket 模式需要额外的 \`everythingd\`，本包未包含；脚本场景请显式加 \`--local\`。"
+            echo
             echo "## 构建产物"
             echo
-            echo "| 架构 | 资产 | SHA256 |"
-            echo "|---|---|---|"
-            for a in assets/everything-linux-*.tar.gz; do
+            echo "| 类型 | 架构 | 资产 | SHA256 |"
+            echo "|---|---|---|---|"
+            for a in assets/*.tar.gz; do
               name=$(basename "$a")
               sha=$(sha256sum "$a" | awk '{print $1}')
+              case "$name" in
+                everything-cli-*) kind=CLI ;;
+                *) kind=GUI ;;
+              esac
               case "$name" in
                 *x86_64*) arch=x86_64 ;;
                 *aarch64*) arch=aarch64 ;;
                 *armv7*) arch=armv7 ;;
               esac
-              echo "| $arch | \`$name\` | \`$sha\` |"
+              echo "| $kind | $arch | \`$name\` | \`$sha\` |"
             done
             echo
-            echo "每个压缩包只含一个 \`everything-gtk\`，解压后直接运行。"
+            echo "GUI 运行要求：Linux + GTK3 运行库。"
             echo
-            echo "运行要求：Linux + GTK3 运行库；不需要 daemon、CLI 或 Unix socket。"
+            echo "CLI 运行要求：Linux 静态二进制，无需 GTK/daemon；使用 \`--local\` 进行进程内查询。"
           } >> release-notes.md
 
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_name }}
-          name: ${{ github.ref_name }}
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: ${{ env.RELEASE_TAG }}
           body_path: release-notes.md
-          files: assets/everything-linux-*.tar.gz
+          files: assets/*.tar.gz
           generate_release_notes: false
