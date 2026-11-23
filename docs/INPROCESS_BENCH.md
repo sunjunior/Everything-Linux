@@ -2,7 +2,7 @@
 
 ## 环境与方法
 
-- Arch Linux x86-64，8 核，31 GiB RAM；索引 939,137 个文件（根 `/home/sunjunior`）。
+- Arch Linux x86-64，8 核，31 GiB RAM；索引 939,137 个文件（根为系统用户家目录）。
 - 两侧使用同一份快照（24 MB），关闭自动根目录。
 - 查询延迟取 10 次中位数；IPC 为 Rust 客户端 `client_call`，进程内为 `LocalEngine::search_paths`（包含路径重建与转成 `String`，与 GUI/CLI 消费路径的方式一致）。
 - GUI 使用当前 X11 会话启动，测窗口出现时间与稳定后 RSS/PSS。
