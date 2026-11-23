@@ -1,7 +1,5 @@
 # 进程内架构 vs 守护进程 + IPC 基准
 
-对比分支：`feature/inprocess-engine`（进程内 `LocalEngine` SDK）与 `main`（守护进程 + Unix socket IPC）。
-
 ## 环境与方法
 
 - Arch Linux x86-64，8 核，31 GiB RAM；索引 939,137 个文件（根 `/home/sunjunior`）。
