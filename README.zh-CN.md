@@ -28,12 +28,14 @@ Everything-Linux 是一个 Linux 文件名搜索工具，目标是复刻 voidtoo
 - **百万级文件名索引**，按名称排序时结果近乎即时
 - **融合 GUI**：索引、查询、`inotify` 全在 `everything-gtk` 进程内运行
 - **结果实时刷新**：文件新增、删除、原子替换后，250ms 防抖重跑当前查询
+- **最近活动优先**：GUI 默认按 `max(mtime, atime)` 降序，刚修改或访问过的文件排在最前
 - **后台换根**：新根在后台建立索引，旧索引继续服务查询，完成后原子切换
 - **紧凑存储**：48 字节条目、共享名字池、zstd 快照
 - **查询语法**：子串、`*`/`?`、正则、大小写/全词/路径模式、AND/OR/NOT、括号
 - **属性过滤**：`size:`、`dm:`、`dc:`、`da:`、`ext:`
 - **桌面集成**：托盘图标、单实例窗口、右键菜单（打开 / 打开路径 / 复制完整路径 / 删除）
 - **可选静态 CLI**：不依赖 GTK 和 daemon；使用 `everything --local`
+- **watch 上限保护**：限制 inotify 用量，接近系统上限时在界面提示
 
 ## 界面预览
 
@@ -123,6 +125,11 @@ auto_root = false
 snapshot_path = "~/.cache/everything-linux/db.eldb"
 socket_path = "/run/user/1000/everything-linux.sock"
 watch_enabled = true
+
+# 可选 inotify 保护。默认使用 max_user_watches 的 90%，80% 时警告。
+# watch_limit = 120000
+watch_warn_percent = 80
+
 debounce_ms = 80
 rescan_interval_secs = 600
 snapshot_interval_secs = 5
@@ -142,6 +149,7 @@ max_results = 100000
 ./everything --local 'dm:>2025-01-01'
 ./everything --local 'ext:rs|md'
 ./everything --local --path 'projects/src'
+./everything --local --sort recent '*.rs'
 ./everything --local --json '*.toml' | jq .
 ```
 
@@ -161,7 +169,7 @@ max_results = 100000
 | 按大小排序 | 7.5 ms |
 | `path:` 查询 | 51.1 ms |
 
-融合引擎的详细基准见 [`docs/INPROCESS_BENCH.md`](docs/INPROCESS_BENCH.md)。
+GUI 默认按最近活动（`max(mtime, atime)`）排序。在当前 1.08M 条目快照上，最近活动排序实测 `*.rs` 8.1 ms、`main.rs` 9.6 ms、`path:` 55.7 ms；排序不增加索引内存。CLI 也可用 `--sort recent`。name/recent 对比数据见 [`docs/INPROCESS_BENCH.md`](docs/INPROCESS_BENCH.md)。
 
 ## 工程结构
 

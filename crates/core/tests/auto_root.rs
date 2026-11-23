@@ -33,6 +33,8 @@ fn config_for(root: &Path, exe: &Path, base: &Path) -> Config {
         snapshot_path: base.join("db.eldb"),
         socket_path: base.join("sock"),
         watch_enabled: false,
+        watch_limit: None,
+        watch_warn_percent: 80,
         debounce_ms: 0,
         rescan_interval_secs: 0,
         snapshot_interval_secs: 0,

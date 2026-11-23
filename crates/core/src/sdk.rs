@@ -100,6 +100,10 @@ impl LocalEngine {
         self.current().lock().watch_count()
     }
 
+    pub fn watch_status(&self) -> Option<(usize, usize, bool)> {
+        self.current().lock().watch_status()
+    }
+
     pub fn update_counters(&self) -> (u64, u64) {
         self.current().lock().update_counters()
     }

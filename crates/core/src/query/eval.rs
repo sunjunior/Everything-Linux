@@ -459,6 +459,20 @@ pub fn run_view<'a>(
                     mb.cmp(&ma)
                 });
             }
+            SortBy::Recent => {
+                slots.select_nth_unstable_by(limit, |&a, &b| {
+                    let ra = view.recent(a);
+                    let rb = view.recent(b);
+                    ra.cmp(&rb)
+                });
+            }
+            SortBy::RecentDesc => {
+                slots.select_nth_unstable_by(limit, |&a, &b| {
+                    let ra = view.recent(a);
+                    let rb = view.recent(b);
+                    rb.cmp(&ra)
+                });
+            }
             SortBy::Path | SortBy::PathDesc => {}
         }
         if !matches!(opts.sort, SortBy::Path | SortBy::PathDesc) {
@@ -507,6 +521,16 @@ pub fn run_view<'a>(
                 ma.cmp(&mb)
             });
             if matches!(opts.sort, SortBy::MtimeDesc) {
+                slots.reverse();
+            }
+        }
+        SortBy::Recent | SortBy::RecentDesc => {
+            slots.sort_by(|&a, &b| {
+                let ra = view.recent(a);
+                let rb = view.recent(b);
+                ra.cmp(&rb)
+            });
+            if matches!(opts.sort, SortBy::RecentDesc) {
                 slots.reverse();
             }
         }

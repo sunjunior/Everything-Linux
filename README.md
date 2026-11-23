@@ -28,12 +28,14 @@ A standalone static CLI is also published for scripts and headless systems. It c
 - **Million-file index** with near-instant, name-sorted results
 - **Fused GUI**: indexing, querying, and `inotify` run inside `everything-gtk`
 - **Live results**: file creation, deletion, and atomic replacement refresh the current query with a 250 ms debounce
+- **Recent activity first**: GUI results default to newest activity, using `max(mtime, atime)` for each file
 - **Background root switch**: a new root is indexed while the old index keeps serving queries
 - **Compact storage**: 48-byte entries, shared name pools, zstd snapshots
 - **Query language**: substrings, `*`/`?`, regex, case/whole-word/path modes, AND/OR/NOT, parentheses
 - **Attribute filters**: `size:`, `dm:`, `dc:`, `da:`, `ext:`
 - **Desktop integration**: tray icon, single-instance window, context menu with open / open location / copy path / delete
 - **Optional static CLI**: no GTK or daemon required; use `everything --local`
+- **Watch-limit protection**: caps inotify usage and warns before the per-user system limit is exhausted
 
 ## Screenshots
 
@@ -123,6 +125,11 @@ auto_root = false
 snapshot_path = "~/.cache/everything-linux/db.eldb"
 socket_path = "/run/user/1000/everything-linux.sock"
 watch_enabled = true
+
+# Optional inotify guard. Defaults: 90% of max_user_watches, warn at 80%.
+# watch_limit = 120000
+watch_warn_percent = 80
+
 debounce_ms = 80
 rescan_interval_secs = 600
 snapshot_interval_secs = 5
@@ -142,6 +149,7 @@ If `roots` is empty, the app falls back to the directory containing the executab
 ./everything --local 'dm:>2025-01-01'
 ./everything --local 'ext:rs|md'
 ./everything --local --path 'projects/src'
+./everything --local --sort recent '*.rs'
 ./everything --local --json '*.toml' | jq .
 ```
 
@@ -161,7 +169,7 @@ Measured on an Arch Linux x86_64 machine with 8 cores and 31 GiB RAM, indexing 1
 | Sort by size | 7.5 ms |
 | `path:` query | 51.1 ms |
 
-See [`docs/INPROCESS_BENCH.md`](docs/INPROCESS_BENCH.md) for the fused-engine benchmarks.
+The GUI sorts matching files by recent activity (`max(mtime, atime)`) by default. On the current 1.08M-entry snapshot, recent-sort timings were 8.1 ms for `*.rs`, 9.6 ms for `main.rs`, and 55.7 ms for `path:`; sorting adds no index memory. `--sort recent` is also available in the CLI. See [`docs/INPROCESS_BENCH.md`](docs/INPROCESS_BENCH.md) for the side-by-side benchmark.
 
 ## Project Layout
 

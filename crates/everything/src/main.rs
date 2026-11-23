@@ -317,7 +317,7 @@ fn print_help() {
     println!("  -w, --whole-word       match whole words");
     println!("      --path             match full paths");
     println!("      --file / --folder  restrict to files / folders");
-    println!("  -s, --sort <FIELD>     name|path|size|mtime (prefix - for descending)");
+    println!("  -s, --sort <FIELD>     name|path|size|mtime|recent (prefix - for descending)");
     println!("  -l, --limit <N>        max results (0 = all)");
     println!("      --json             JSON output");
     println!("      --local            run the index in this process (no daemon/IPC)");

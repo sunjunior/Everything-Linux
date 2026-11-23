@@ -90,7 +90,13 @@ impl Engine {
         if !self.config.watch_enabled {
             return Ok(());
         }
-        let m = Arc::new(Monitor::new()?);
+        let max_watches = crate::monitor::max_user_watches();
+        let limit = self
+            .config
+            .watch_limit
+            .unwrap_or_else(|| max_watches.saturating_mul(90) / 100)
+            .clamp(1, max_watches);
+        let m = Arc::new(Monitor::new(limit)?);
         {
             let s = self.store.read();
             let dirs: Vec<PathBuf> = (0..s.len())
@@ -306,6 +312,15 @@ impl Engine {
 
     pub fn watch_count(&self) -> usize {
         self.monitor.as_ref().map(|m| m.watch_count()).unwrap_or(0)
+    }
+
+    pub fn watch_status(&self) -> Option<(usize, usize, bool)> {
+        let monitor = self.monitor.as_ref()?;
+        let count = monitor.watch_count();
+        let limit = monitor.limit();
+        let warn_percent = self.config.watch_warn_percent.clamp(1, 100) as usize;
+        let warn = count.saturating_mul(100) >= limit.saturating_mul(warn_percent);
+        Some((count, limit, warn))
     }
 
     pub fn update_counters(&self) -> (u64, u64) {

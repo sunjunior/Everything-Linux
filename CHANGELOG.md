@@ -9,6 +9,17 @@
 - 实验分支：新增进程内 `LocalEngine` SDK 与 `everything --local`；GUI 可在同进程内运行索引，省去 IPC。
 - 融合版 GUI 改为 slot 惰性渲染 + Top-N 截断，宽结果查询约快 30%，全路径约快 13–15%。
 
+## [v0.3.3beta] - 2026-11-23
+
+### 新增与改进
+
+- GUI 结果默认按最近活动排序：取 `max(mtime, atime)` 降序，刚修改或访问过的文件排在最前面。
+- CLI 增加 `--sort recent` / `--sort -recent`，可用最近活动排序。
+- inotify watch 保护：默认最多使用系统 `max_user_watches` 的 90%，达到 80% 时在 GUI 状态栏显示警告。
+- 新增配置 `watch_limit`（绝对上限）和 `watch_warn_percent`（警告百分比）；测试时可把 `watch_limit` 设小。
+- 达到 watch 上限后停止创建新 watch，索引仍可完成，未覆盖目录依靠周期对账；避免耗尽系统/其他程序的 inotify 配额。
+- 版本号升至 `0.3.3-beta`；GUI 与静态 CLI 均提供 Linux x86_64 / aarch64 / armv7。
+
 ## [v0.3.2beta] - 2026-11-22
 
 ### 新增与改进

@@ -14,6 +14,10 @@ pub struct Config {
     pub snapshot_path: PathBuf,
     pub socket_path: PathBuf,
     pub watch_enabled: bool,
+    /// Hard cap for inotify watches. None uses 90% of the system limit.
+    pub watch_limit: Option<usize>,
+    /// Warn when watch usage reaches this percentage of watch_limit.
+    pub watch_warn_percent: u8,
     pub debounce_ms: u64,
     pub rescan_interval_secs: u64,
     pub snapshot_interval_secs: u64,
@@ -39,6 +43,8 @@ impl Default for Config {
                 .unwrap_or_else(|| PathBuf::from("/tmp"))
                 .join("everything-linux.sock"),
             watch_enabled: true,
+            watch_limit: None,
+            watch_warn_percent: 80,
             debounce_ms: 80,
             rescan_interval_secs: 600,
             snapshot_interval_secs: 5,

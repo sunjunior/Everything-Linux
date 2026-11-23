@@ -4,6 +4,7 @@ use std::os::unix::ffi::OsStringExt;
 use std::os::unix::io::RawFd;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crossbeam_channel::{Receiver, Sender};
 use parking_lot::RwLock;
@@ -24,6 +25,14 @@ const WATCH_MASK: u32 = libc::IN_CREATE
     | libc::IN_UNMOUNT
     | libc::IN_ISDIR
     | libc::IN_ONLYDIR;
+
+pub fn max_user_watches() -> usize {
+    std::fs::read_to_string("/proc/sys/fs/inotify/max_user_watches")
+        .ok()
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(524_288)
+        .max(1)
+}
 
 #[derive(Debug, Clone)]
 pub enum FsEvent {
@@ -48,10 +57,13 @@ pub struct Monitor {
     fd: RawFd,
     rx: Receiver<FsEvent>,
     wd_paths: Arc<RwLock<HashMap<i32, PathBuf>>>,
+    limit: usize,
+    limit_warned: AtomicBool,
 }
 
 impl Monitor {
-    pub fn new() -> Result<Self> {
+    pub fn new(limit: usize) -> Result<Self> {
+        let limit = limit.max(1);
         let fd = unsafe { libc::inotify_init1(libc::IN_NONBLOCK | libc::IN_CLOEXEC) };
         if fd < 0 {
             return Err(Error::Io(std::io::Error::last_os_error()));
@@ -65,10 +77,25 @@ impl Monitor {
             .spawn(move || reader_loop(fd, tx, wd_paths_t))
             .map_err(|e| Error::Other(e.into()))?;
 
-        Ok(Self { fd, rx, wd_paths })
+        Ok(Self {
+            fd,
+            rx,
+            wd_paths,
+            limit,
+            limit_warned: AtomicBool::new(false),
+        })
     }
 
     pub fn add_watch(&self, path: &Path) -> Result<()> {
+        if self.wd_paths.read().len() >= self.limit {
+            if !self.limit_warned.swap(true, Ordering::SeqCst) {
+                warn!(
+                    "inotify watch limit reached ({}); new directories will not be watched",
+                    self.limit
+                );
+            }
+            return Ok(());
+        }
         let cpath = std::ffi::CString::new(path.as_os_str().as_encoded_bytes())
             .map_err(|_| Error::Ipc("path contains NUL".into()))?;
         let wd = unsafe { libc::inotify_add_watch(self.fd, cpath.as_ptr(), WATCH_MASK) };
@@ -107,6 +134,10 @@ impl Monitor {
 
     pub fn watch_count(&self) -> usize {
         self.wd_paths.read().len()
+    }
+
+    pub fn limit(&self) -> usize {
+        self.limit
     }
 
     pub fn watched_paths(&self) -> Vec<PathBuf> {

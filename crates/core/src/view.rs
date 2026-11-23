@@ -76,6 +76,10 @@ impl<'a> IndexView<'a> {
         }
     }
 
+    pub fn recent(&self, slot: SlotId) -> i64 {
+        self.mtime(slot).max(self.accessed(slot))
+    }
+
     pub fn path(&self, slot: SlotId, buf: &mut Vec<u8>) {
         match self {
             Self::Store(s) => s.path(slot, buf),

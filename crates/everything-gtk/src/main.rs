@@ -14,7 +14,7 @@ use gtk_sys::GtkStatusIcon;
 
 use everything_core::config::Config;
 use everything_core::ipc::Header;
-use everything_core::model::QueryOptions;
+use everything_core::model::{QueryOptions, SortBy};
 use everything_core::sdk::LocalEngine;
 const ICON_16: &[u8] = include_bytes!("../assets/icon-16.png");
 const ICON_24: &[u8] = include_bytes!("../assets/icon-24.png");
@@ -270,6 +270,7 @@ struct ResultMsg {
     header: Option<Header>,
     slots: Vec<u32>,
     root_generation: u64,
+    watch_status: Option<(usize, usize, bool)>,
     error: Option<String>,
 }
 
@@ -625,6 +626,7 @@ fn build_ui(
                         header: None,
                         slots: Vec::new(),
                         root_generation: 0,
+                        watch_status: None,
                         error: Some(e.to_string()),
                     });
                     return;
@@ -646,10 +648,12 @@ fn build_ui(
                 }
                 let options = QueryOptions {
                     limit: 5000,
+                    sort: SortBy::RecentDesc,
                     ..Default::default()
                 };
                 let result = engine.search_slots(&text, options);
                 let root_generation = engine.root_generation();
+                let watch_status = engine.watch_status();
                 let msg = match result {
                     Ok(result) => ResultMsg {
                         header: Some(Header {
@@ -663,12 +667,14 @@ fn build_ui(
                         }),
                         slots: result.slots,
                         root_generation,
+                        watch_status,
                         error: None,
                     },
                     Err(e) => ResultMsg {
                         header: None,
                         slots: Vec::new(),
                         root_generation,
+                        watch_status,
                         error: Some(e.to_string()),
                     },
                 };
@@ -719,7 +725,7 @@ fn build_ui(
                     }
                 }
             }
-            let label = match (msg.header, msg.error) {
+            let mut label = match (msg.header, msg.error) {
                 (Some(h), _) if h.ok => format!(
                     "{} results ({} total)  {:.1} ms  gen {}",
                     h.count, h.total, h.elapsed_ms, h.generation
@@ -727,6 +733,9 @@ fn build_ui(
                 (_, Some(e)) => e,
                 _ => "No results".into(),
             };
+            if let Some((count, limit, true)) = msg.watch_status {
+                label = format!("{label}  ⚠ 文件监听 {count}/{limit}");
+            }
             status.set_label(&label);
             glib::ControlFlow::Continue
         });

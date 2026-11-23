@@ -211,3 +211,25 @@ fn size_desc_limit_keeps_largest() {
     assert!(got.contains(&"nested_one.rs".to_string()));
     assert!(got.contains(&"nested_two.rs".to_string()));
 }
+
+#[test]
+fn recent_sort_prefers_latest_activity() {
+    let mut s = fixture();
+    let root = s.roots[0].slot;
+    let alpha = s.find_child(root, b"alpha.txt").unwrap();
+    let beta = s.find_child(root, b"beta.rs").unwrap();
+    let readme = s.find_child(root, b"README.md").unwrap();
+    s.entries[alpha as usize].mtime = 10;
+    s.entries[alpha as usize].accessed = 100;
+    s.entries[beta as usize].mtime = 50;
+    s.entries[beta as usize].accessed = 0;
+    s.entries[readme as usize].mtime = 200;
+    s.entries[readme as usize].accessed = 0;
+
+    let opts = QueryOptions {
+        sort: everything_core::model::SortBy::RecentDesc,
+        ..Default::default()
+    };
+    let got = names(&s, "alpha.txt | beta.rs | README.md", opts);
+    assert_eq!(got, vec!["README.md", "alpha.txt", "beta.rs"]);
+}

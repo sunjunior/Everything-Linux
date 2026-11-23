@@ -57,6 +57,8 @@ pub enum SortBy {
     SizeDesc,
     Mtime,
     MtimeDesc,
+    Recent,
+    RecentDesc,
 }
 
 impl SortBy {
@@ -71,6 +73,9 @@ impl SortBy {
             "path" | "p" => Self::Path,
             "size" | "s" => Self::Size,
             "mtime" | "date" | "t" => Self::Mtime,
+            "recent" | "activity" | "r" => {
+                return Some(if desc { Self::Recent } else { Self::RecentDesc });
+            }
             _ => return None,
         };
         Some(if desc { base.reversed() } else { base })
@@ -86,6 +91,8 @@ impl SortBy {
             Self::SizeDesc => Self::Size,
             Self::Mtime => Self::MtimeDesc,
             Self::MtimeDesc => Self::Mtime,
+            Self::Recent => Self::RecentDesc,
+            Self::RecentDesc => Self::Recent,
         }
     }
 }
